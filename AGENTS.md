@@ -1,5 +1,9 @@
 # Agent Instructions — claude-workday-test
 
+All GitHub operations in this repository go through the `plugin:github:github` MCP server, not
+the `gh` CLI. If you're about to run a `gh` command, or translating one the user pasted, use the
+`gh-to-mcp` skill first to find the equivalent MCP tool call.
+
 This repository lives under the `msa1624` GitHub org, which has org-level **Issue Fields**
 configured (Settings > Planning > Issue fields):
 
@@ -33,6 +37,9 @@ user before creating the issue.** Do not guess Priority, Effort, or dates — a 
 worse than a missed field.
 
 ## Creating pull requests
+
+See the `gh-to-mcp` skill if you're working from a `gh pr` command — it maps `gh pr create`,
+`gh pr edit`, `gh pr review`, `gh pr merge`, etc. to the matching MCP tool calls.
 
 `mcp__plugin_github_github__create_pull_request` has no `issue_fields` parameter — GitHub's
 Issue Fields feature does not extend to PRs through this tool, so it cannot be enforced the

@@ -1,40 +1,40 @@
 ---
 name: end-workday
-description: Use when ending a work session to summarize completed work, update issue/PR statuses, and note carry-over tasks for tomorrow in the current repository
+description: Use when ending a work session to summarize completed work, update issue/PR statuses, and note carry-over tasks for tomorrow across the current organization
 ---
 
 # End Workday
 
 ## Overview
 
-A structured wrap-up workflow for the current repository that captures what was accomplished today, updates relevant issues/PRs, and records carry-over items so tomorrow's start is frictionless.
+A structured wrap-up workflow across the whole organization that captures what was accomplished today, updates relevant issues/PRs, and records carry-over items so tomorrow's start is frictionless. All GitHub access below goes through the `plugin:github:github` MCP server — if you're translating a `gh` CLI command into the equivalent tool call, see the [gh-to-mcp](../gh-to-mcp/SKILL.md) skill.
 
 ## When to Use
 
-- You are finishing work for the day and want a clean handoff for the current repository
+- You are finishing work for the day and want a clean handoff across the organization
 - You need to update issue/PR statuses to reflect progress made today
 - You want to log daily progress for tracking or reporting
 - You want tomorrow's start-workday briefing to pick up where you left off
 
 ## How It Works
 
-### Step 1: Detect Current Repository
+### Step 1: Detect Current Organization
 
-Extract the repository owner and name from the git remote:
+Extract the org (repository owner) from the git remote:
 ```
 git config --get remote.origin.url
-  → parse to extract owner/repo
+  → parse to extract owner (org) — the repo name itself is no longer needed for scoping
 ```
 
 ### Step 2: Find Today's Activity
 
-Use `search_issues` and `search_pull_requests` with date filters to find items worked on:
+Use `search_issues` and `search_pull_requests` scoped to the org with date filters to find items worked on anywhere in the org:
 ```
-search_issues(query: "repo:owner/repo updated:TODAY")
-  → returns: all issues in current repo updated today
+search_issues(query: "org:{owner} updated:TODAY")
+  → returns: all issues across the org updated today
 
-search_pull_requests(query: "repo:owner/repo updated:TODAY")
-  → returns: all PRs in current repo updated today
+search_pull_requests(query: "org:{owner} updated:TODAY")
+  → returns: all PRs across the org updated today
 ```
 
 ### Step 3: Capture Completed Work
@@ -43,11 +43,11 @@ For each item worked on today, record what changed:
 
 **Closed/Merged items:**
 ```
-search_issues(query: "repo:owner/repo state:closed closed:TODAY")
-  → returns: issues closed today in current repo
+search_issues(query: "org:{owner} state:closed closed:TODAY")
+  → returns: issues closed today across the org
 
-search_pull_requests(query: "repo:owner/repo state:merged merged:TODAY")
-  → returns: PRs merged today in current repo
+search_pull_requests(query: "org:{owner} state:merged merged:TODAY")
+  → returns: PRs merged today across the org
 ```
 
 **Updated but not closed:**
@@ -79,50 +79,44 @@ Add review comments on PRs using `pull_request_review_write`:
 pull_request_review_write(owner, repo, pull_request_number, method: "create", body: "Summary of progress...")
 ```
 
-### Step 5: Record Carry-Over
+### Step 4a: Reconcile Push Activity Against AGENTS.md
 
-Save unfinished work to a local file so start-workday can reference it:
+`AGENTS.md` requires that every `git push` be followed by: a progress comment on each
+issue referenced in the pushed commits, closing the issue if a closing keyword
+(`Fixes`/`Closes`/`Resolves #N`) was used and the work is genuinely done, and updates to
+Priority/Start date/Target date if the timeline or urgency shifted. That check doesn't
+always happen at push time — this step catches and repairs anything that slipped through.
 
-Gather carry-over items using GitHub MCP tools:
+For each local commit pushed today (`git log --since=midnight --oneline`), extract any
+`#N` issue references:
+
+- If the commit references an issue but no comment mentioning that commit exists on the
+  issue, add one now summarizing what it did.
+- If the commit used a closing keyword and the work is genuinely complete but the issue
+  is still open, close it via `issue_write` with the appropriate `state_reason`.
+- If the work shifts urgency or timeline, update the relevant issue fields.
+
+Note any discrepancy you find and fix in the end-of-day report (see Step 6) under a
+"Compliance gaps found" line — this is the signal that the push-time self-check in
+`AGENTS.md` isn't reliably firing on its own and needs attention.
+
+### Step 5: Identify Carry-Over
+
+Gather still-open work using GitHub MCP tools — this is presented directly in the report
+(Step 6), not persisted anywhere. There is no local carry-over file: with multiple people
+and agents working across the org, a cached snapshot goes stale immediately, so every run
+of start-workday and end-workday re-fetches live state from GitHub instead.
+
 ```
-list_issues(owner, repo, state="open", sort="updated", direction="desc")
-  → returns: open issues in current repo
+search_issues(query: "org:{owner} is:issue is:open", sort="updated", order="desc")
+  → returns: open issues across the org
 
-list_pull_requests(owner, repo, state="open", sort="updated", direction="desc")
-  → returns: open PRs in current repo
+search_pull_requests(query: "org:{owner} is:pr is:open", sort="updated", order="desc")
+  → returns: open PRs across the org
 ```
 
-Compile results into a structured JSON file (~/.claude/workday-today.json):
-```json
-{
-  "date": "2026-07-24",
-  "repo": "owner/repo",
-  "completed": [
-    {"type": "issue", "number": 3, "title": "Fix auth bug", "status": "closed"},
-    {"type": "pr", "number": 5, "title": "Add validation", "status": "merged"}
-  ],
-  "carryOver": [
-    {
-      "type": "issue",
-      "number": 7,
-      "title": "Dashboard metrics",
-      "status": "in-progress",
-      "notes": "Completed data layer. Still need UI components.",
-      "blockedBy": null,
-      "blocks": ["#8"]
-    },
-    {
-      "type": "pr",
-      "number": 9,
-      "title": "Rate limiting middleware",
-      "status": "review-pending",
-      "notes": "Pushed v2 addressing review comments. Waiting on @reviewer.",
-      "blockedBy": null,
-      "blocks": ["#4"]
-    }
-  ]
-}
-```
+For each open item, note what's done and what's left based on its comments/review
+history (from Step 3) so the report is useful without needing yesterday's file.
 
 ### Step 6: Generate End-of-Day Report
 
@@ -130,28 +124,31 @@ Produce a structured summary:
 
 ```
 ## End of Day Summary — YYYY-MM-DD
-Repository: owner/repo
+Organization: owner
 
 ### Completed (N items)
-| # | Type | Title | Status |
-|---|------|-------|--------|
-| 3 | Issue | Fix auth bug | Closed |
-| 5 | PR | Add validation | Merged |
+| # | Repo | Type | Title | Status |
+|---|------|------|-------|--------|
+| 3 | owner/repo-a | Issue | Fix auth bug | Closed |
+| 5 | owner/repo-b | PR | Add validation | Merged |
 
 ### In Progress / Carry-Over (M items)
-- #7 — Dashboard metrics
+- owner/repo-a#7 — Dashboard metrics
   - Done: data layer implemented
   - Remaining: UI components
-  - Blocks: #8
+  - Blocks: owner/repo-a#8
 
-- PR #9 — Rate limiting middleware
+- owner/repo-b PR #9 — Rate limiting middleware
   - Status: awaiting review from @reviewer
-  - Blocks: issue #4
+  - Blocks: owner/repo-a#4
 
 ### Notes for Tomorrow
-- Follow up on PR #9 review comments
-- Start UI work on dashboard (#7)
-- Check if #4 is ready to move forward
+- Follow up on owner/repo-b#9 review comments
+- Start UI work on dashboard (owner/repo-a#7)
+- Check if owner/repo-a#4 is ready to move forward
+
+### Compliance gaps found
+- owner/repo-a#11 was missing its push progress comment — added just now
 ```
 
 ## Tips
@@ -160,4 +157,5 @@ Repository: owner/repo
 - Link commits to issues when possible (`see commit abc123`)
 - Update labels before closing so tomorrow's scan picks up the right state
 - If you left a PR open for review, note who is expected to review it
-- The carry-over file becomes tomorrow's start-workday input
+- Don't write carry-over to a local file — start-workday re-fetches open issues/PRs live, so status updates and labels made here (Step 4) are what actually carry information forward
+- Always qualify item references with their repo (`owner/repo#N`) since the summary spans multiple repos — a bare `#N` is ambiguous across the org
