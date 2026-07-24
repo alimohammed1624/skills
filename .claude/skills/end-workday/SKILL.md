@@ -26,7 +26,25 @@ git config --get remote.origin.url
   → parse to extract owner (org) — the repo name itself is no longer needed for scoping
 ```
 
-### Step 2: Find Today's Activity
+### Step 2: Check for Pending Changes (⚠️ PRIORITY)
+
+Before proceeding, check for uncommitted work and unpushed commits — these are **blocking items** that must be addressed before wrapping up:
+
+```bash
+git status --short
+  → any output = uncommitted changes exist (critical blocker)
+
+git log --oneline @{u}.. 2>/dev/null || git log --oneline origin/main..HEAD
+  → any output = commits exist locally but not pushed to remote (must push before end-of-day)
+```
+
+If either check returns results:
+- **Uncommitted changes**: List them in a prominent "⚠️ Pending Changes" section at the top of the report
+- **Unpushed commits**: List the commits and note they must be pushed to complete the day's work
+
+This step is highest priority — these are the things that prevent a clean handoff.
+
+### Step 3: Find Today's Activity
 
 Use `search_issues` and `search_pull_requests` scoped to the org with date filters to find items worked on anywhere in the org:
 ```
@@ -37,7 +55,7 @@ search_pull_requests(query: "org:{owner} updated:TODAY")
   → returns: all PRs across the org updated today
 ```
 
-### Step 3: Capture Completed Work
+### Step 4: Capture Completed Work
 
 For each item worked on today, record what changed:
 
@@ -55,7 +73,7 @@ search_pull_requests(query: "org:{owner} state:merged merged:TODAY")
 - Note what was done from comments and review history
 - Reference commits in issue bodies
 
-### Step 4: Update Statuses
+### Step 5: Update Statuses
 
 For items that are still open but have meaningful progress:
 
@@ -79,7 +97,7 @@ Add review comments on PRs using `pull_request_review_write`:
 pull_request_review_write(owner, repo, pull_request_number, method: "create", body: "Summary of progress...")
 ```
 
-### Step 4a: Reconcile Push Activity Against AGENTS.md
+### Step 5a: Reconcile Push Activity Against AGENTS.md
 
 `AGENTS.md` requires that every `git push` be followed by: a progress comment on each
 issue referenced in the pushed commits, closing the issue if a closing keyword
@@ -96,11 +114,11 @@ For each local commit pushed today (`git log --since=midnight --oneline`), extra
   is still open, close it via `issue_write` with the appropriate `state_reason`.
 - If the work shifts urgency or timeline, update the relevant issue fields.
 
-Note any discrepancy you find and fix in the end-of-day report (see Step 6) under a
+Note any discrepancy you find and fix in the end-of-day report (see Step 7) under a
 "Compliance gaps found" line — this is the signal that the push-time self-check in
 `AGENTS.md` isn't reliably firing on its own and needs attention.
 
-### Step 5: Identify Carry-Over
+### Step 6: Identify Carry-Over
 
 Gather still-open work using GitHub MCP tools — this is presented directly in the report
 (Step 6), not persisted anywhere. There is no local carry-over file: with multiple people
@@ -118,13 +136,24 @@ search_pull_requests(query: "org:{owner} is:pr is:open", sort="updated", order="
 For each open item, note what's done and what's left based on its comments/review
 history (from Step 3) so the report is useful without needing yesterday's file.
 
-### Step 6: Generate End-of-Day Report
+### Step 7: Generate End-of-Day Report
 
-Produce a structured summary:
+Produce a structured summary, **starting with pending changes if any exist**:
 
 ```
 ## End of Day Summary — YYYY-MM-DD
 Organization: owner
+
+### ⚠️ Pending Changes (BLOCKING)
+**Uncommitted changes:**
+- file1.js
+- file2.md
+
+**Unpushed commits:**
+- abc1234 — Fix bug in auth flow
+- def5678 — Add new feature
+
+⚠️ **Action required**: Commit and push all changes before ending the workday.
 
 ### Completed (N items)
 | # | Repo | Type | Title | Status |
@@ -153,9 +182,10 @@ Organization: owner
 
 ## Tips
 
+- **Pending changes take priority** — if uncommitted changes or unpushed commits exist, these must be resolved before any end-workday wrap-up is complete
 - Be specific in carry-over notes — "what was done" and "what's left" are both critical
 - Link commits to issues when possible (`see commit abc123`)
 - Update labels before closing so tomorrow's scan picks up the right state
 - If you left a PR open for review, note who is expected to review it
-- Don't write carry-over to a local file — start-workday re-fetches open issues/PRs live, so status updates and labels made here (Step 4) are what actually carry information forward
+- Don't write carry-over to a local file — start-workday re-fetches open issues/PRs live, so status updates and labels made here (Step 5) are what actually carry information forward
 - Always qualify item references with their repo (`owner/repo#N`) since the summary spans multiple repos — a bare `#N` is ambiguous across the org
