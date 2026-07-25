@@ -19,7 +19,7 @@ timeline, and the value is entirely in joining them.
 **REQUIRED READING — first, before anything else:** `.claude/.tracking/format.md`. It holds the
 paths, bootstrap procedure, cursor schemas, and event format this skill depends on.
 
-**REQUIRED SUB-SKILL:** Use gh-to-mcp before running any `gh` command.
+**REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command.
 
 ## Explicitly Invoked Only
 
@@ -322,7 +322,7 @@ Bot activity excluded: 7 dependabot PRs.
 | Same person, two handles | Ask in Notes; never merge identities silently |
 | Repo with no timeline events | Untracked, not inactive. Say which. |
 | End of every run | Overwrite `last_checked` |
-| About to run a `gh` command | Stop, use gh-to-mcp |
+| About to run a `gh` command | Stop, use gh-wrapper |
 
 ## Common Rationalizations
 

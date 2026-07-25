@@ -19,7 +19,7 @@ reporting.
 paths, bootstrap procedure, cursor schemas, event format, and view-generation rules this skill
 depends on.
 
-**REQUIRED SUB-SKILL:** Use gh-to-mcp before running any `gh` command.
+**REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command.
 
 ## The Iron Law
 
@@ -311,7 +311,7 @@ Omit the Pending Changes section entirely when Step 3 comes back clean.
 | Push fails transiently | Events stay on disk, reported, pushed next run |
 | End of every run | Move `session` → `last_session`, clear `session` — even on a dirty run |
 | Referencing an item | Always `owner/repo#N` |
-| About to run a `gh` command | Stop, use gh-to-mcp |
+| About to run a `gh` command | Stop, use gh-wrapper |
 
 ## Common Rationalizations
 

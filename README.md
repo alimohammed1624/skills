@@ -21,7 +21,7 @@ Each skill is a `SKILL.md` with YAML frontmatter (`name`, `description`) that Cl
 its description matches the task. The description is itself under test: does the right skill fire
 for a given phrasing, and does it stay silent when another is the better fit?
 
-There are **four** skills — the three the design specifies, plus gh-to-mcp. The substrate they share
+There are **four** skills — the three the design specifies, plus gh-wrapper. The substrate they share
 is a plain reference file, [`.claude/.tracking/format.md`](.claude/.tracking/format.md), not a skill:
 it has no frontmatter, never triggers on its own, and is read as each skill's first step. It owns
 everything about *where things live and what shape they are* — the deterministic paths, the
@@ -80,17 +80,21 @@ never rank or editorialize about anyone's output.
 planned dates come from the issue and actual dates from the timeline and never the reverse; that a
 repo with no timeline events is called untracked rather than inactive.
 
-### gh-to-mcp
+### gh-wrapper
 
 Required sub-skill for all of the above. Narrow job: whenever a `gh` CLI command would otherwise run
 — typed by Claude, pasted by the user, or implied by a script — translate it to the equivalent
 `plugin:github:github` MCP tool call instead of shelling out. That's what keeps org-level Issue
-Field and issue-type enforcement intact. Plain `git` is explicitly not `gh` and needs no
-translation.
+Field and issue-type enforcement intact. When no MCP tool covers the action, it falls back to
+running the real `gh` command directly rather than inventing a tool call or refusing outright — the
+one exception is Issue Fields and issue types, which have no `gh` fallback at all. Plain `git` is
+explicitly not `gh` and needs no translation.
 
-**What to probe:** that `gh` never actually gets shelled out to; that issue creation is questioned
-rather than filled with a guess when a field is missing; that an option name outside the org's
-actual list is rejected; that translating a merge/delete doesn't skip confirm-before-acting.
+**What to probe:** that `gh` only gets shelled out to when no MCP tool exists for the action, and
+that the fallback is announced rather than silent; that issue creation is questioned rather than
+filled with a guess when a field is missing; that an option name outside the org's actual list is
+rejected; that Issue Fields/issue types are never set via a `gh` fallback; that translating or
+falling back on a merge/delete doesn't skip confirm-before-acting.
 
 ## State
 

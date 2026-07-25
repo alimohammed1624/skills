@@ -2,7 +2,7 @@
 
 > **This is a reference document, not a skill.** It has no frontmatter and never triggers on its
 > own. The three skills — start-work, end-work, and `/snapshot` — each read it as their first step.
-> There are exactly three skills in this design (plus gh-to-mcp, which has its own independent
+> There are exactly three skills in this design (plus gh-wrapper, which has its own independent
 > trigger); this file exists so the substrate they share isn't copied three ways and left to drift.
 
 start-work, end-work, and `/snapshot` all read and write one shared substrate: a per-org tracking
@@ -12,7 +12,7 @@ workflows and defer here for everything about *where things live and what shape 
 **Core principle:** State lives in GitHub and is always fetched live. Events live in the timeline
 and are never re-derived. Nothing caches the other.
 
-**REQUIRED SUB-SKILL:** Use gh-to-mcp before running any `gh` command. All GitHub access goes
+**REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. All GitHub access goes
 through the `plugin:github:github` MCP server. Plain `git` against the tracking clone and product
 repos is not `gh` and is used directly.
 
@@ -503,7 +503,7 @@ are derived — a regenerated file is always correct, a merged one may be neithe
 | Push to tracking rejected | Discard `views/`, `pull --rebase`, regenerate, push |
 | Push fails for permissions | end-work stops before writing; start-work and `/snapshot` are unaffected |
 | Push fails transiently (offline) | Leave events on disk, report it, they push next run |
-| About to run a `gh` command | Stop, use gh-to-mcp |
+| About to run a `gh` command | Stop, use gh-wrapper |
 
 ## Common Rationalizations
 

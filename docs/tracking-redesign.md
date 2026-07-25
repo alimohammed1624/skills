@@ -215,7 +215,7 @@ select. Two concepts:
   commits that close it.
 
 This maps cleanly onto machinery that already exists: GitHub's `sub_issue_write` gives us real
-parent/child issues, and `gh-to-mcp` already **requires** Priority, Effort, Start date and Target
+parent/child issues, and `gh-wrapper` already **requires** Priority, Effort, Start date and Target
 date on every issue creation. That means every thread already has the dates a Gantt chart needs —
 we've just never collected them anywhere they could be charted.
 
@@ -386,7 +386,7 @@ Notes on the tree:
 - The six existing briefing sections stay, but get **filtered by the answer**. Resuming `api#41`
   should lead with that thread, not with an org-wide stale-items list.
 - The new-track branch is where the four required Issue Fields get collected — which is exactly
-  what makes the Gantt possible. `gh-to-mcp` already refuses to guess these; here the conversation
+  what makes the Gantt possible. `gh-wrapper` already refuses to guess these; here the conversation
   naturally establishes them.
 - **Open question:** should the question tree run *before* the briefing (as drawn) or after? Before
   means better scoping; after means the dev can see what happened before deciding what to work on.
@@ -529,7 +529,7 @@ Full design in [`target-workflow.md`](./target-workflow.md) §2–3.
 ### 9.5 The one thing I'd genuinely reconsider
 
 GitHub Projects already does Gantt charts, dependency tracking, and cross-repo rollups, and the
-`gh-to-mcp` skill already treats Issue Fields (Priority, Effort, Start date, Target date) as the
+`gh-wrapper` skill already treats Issue Fields (Priority, Effort, Start date, Target date) as the
 org's Projects-equivalent enforcement surface. Building a parallel tracking system in flat files
 means two places to look and two places to drift.
 

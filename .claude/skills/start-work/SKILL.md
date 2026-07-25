@@ -20,7 +20,7 @@ to collapse the question tree, never to decide for the developer.
 paths, bootstrap procedure, cursor schemas, and event format this skill depends on. Read it before
 touching anything under `~/.claude/`.
 
-**REQUIRED SUB-SKILL:** Use gh-to-mcp before running any `gh` command. All GitHub access goes
+**REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. All GitHub access goes
 through the `plugin:github:github` MCP server.
 
 ## What This Skill Owns
@@ -285,7 +285,7 @@ saying no session was opened and nothing was written.
 | `tracks.yml` is empty | Don't offer "existing track" |
 | "Just looking" | Brief and stop. No cursor write, no event, no branch. |
 | Referencing an item | Always `owner/repo#N` |
-| About to run a `gh` command | Stop, use gh-to-mcp |
+| About to run a `gh` command | Stop, use gh-wrapper |
 
 ## Common Rationalizations
 
