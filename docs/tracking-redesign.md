@@ -1,7 +1,23 @@
 # Tracking Redesign — Brainstorming Scratchpad
 
-> **Status:** exploratory. Nothing here is implemented. No skill files have been edited.
-> The point of this doc is to get to agreement on the shape before touching `.claude/skills/`.
+> **Status:** exploratory, and now **superseded** — all open questions are settled (§10, now fourteen).
+> The resolved design is [`target-workflow.md`](./target-workflow.md); read that one to know what
+> we're building. This doc is kept for the reasoning, including the options that lost.
+>
+> Skill names below are the ones used during this discussion. In the resolved design they are
+> **`start-workday` → `start-work`**, **`end-workday` → `end-work`** (a session is bounded by the
+> two commands, not by a calendar day), and **`project-status` → `/snapshot`** (§10 item 9), an
+> explicitly-invoked command rather than an auto-triggered skill.
+>
+> Two proposals below were **reversed** by the decision to use a dedicated tracking repo: §2's
+> in-repo `.claude/.tracking/timeline/` layout (and the `.gitignore` narrowing it needed), and
+> §9.2's recommendation to gitignore the generated views. Both are annotated in place.
+>
+> A third reversal, after this doc's own §10 was first written: the "merged into one cursor file"
+> resolution (item 2 below) didn't hold. The final design splits back into **two** fully independent
+> files — `status.json` (start/end-workday) and `snapshot.json` (`/snapshot`) — because a merged
+> file made `/snapshot` a plausible place to look for workday state, which is exactly the confusion
+> the original merge was trying to avoid, just moved one level down. See `target-workflow.md` §4.
 
 ---
 
@@ -45,6 +61,11 @@ flowchart LR
 ---
 
 ## 2. Proposed shape
+
+> **Superseded by §9.3.** `timeline/` moved to a dedicated `msa1624/tracking` repo, which leaves
+> `.claude/.tracking/` holding only the gitignored `status.json` — so the `.gitignore` narrowing
+> described below is no longer needed and a plain directory ignore still works. The two-halves
+> split is still the core idea; the halves just ended up in two different repos.
 
 Replace `.claude/state/` with `.claude/.tracking/`, split into two halves with **different
 lifetimes and different git treatment**:
@@ -449,21 +470,43 @@ Per-dev-per-month files solve the common case. Still worth planning for:
   gitignore the views and regenerate on demand; or generate them in CI on `main` only; or accept
   "take theirs and regenerate" as the standing resolution. **I'd gitignore the views** — they're
   derived, and a derived file in version control is a conflict generator by construction.
+  → **Reversed by §9.3.** That reasoning holds when the views live on N branches across N repos.
+  In a single-branch tracking repo with a pull-before-regenerate rule, they're just files — and
+  committing them is what makes the org-wide Gantt readable on GitHub without cloning anything.
 - Add a `.gitattributes` `merge=union` for `*.jsonl` so append-only conflicts auto-resolve.
 
-### 9.3 Which repo holds the org-wide timeline?
+### 9.3 Which repo holds the org-wide timeline? — **SETTLED: a dedicated repo**
 
 The design says "consensus across the org," but the files live in one repo. If every repo gets its
 own `.tracking/timeline/`, there is no org-wide view — just N partial ones. Options:
 
-- **A dedicated `msa1624/.tracking` repo** (or `.github`, which GitHub already treats as org-level).
-  Skills read/write it via MCP regardless of which repo you're standing in. Cleanest conceptually;
-  needs the skills to know the tracking repo's name.
+- **A dedicated `msa1624/tracking` repo.** Skills read/write it regardless of which repo you're
+  standing in. Cleanest conceptually; needs the skills to know the tracking repo's name.
 - **Whichever repo you're in**, accepting fragmentation. Simplest; loses the main benefit.
 - **Both** — write locally, sync to the central repo on end-workday.
 
-I'd pick the dedicated repo. It also makes the commit-and-push question (§8.2) much less fraught,
-since the tracking commit never lands in a product repo's history.
+**Decided: the dedicated repo.** The org-wide-view argument above is what motivated it, but the
+argument that actually settles it is **branching**, which the in-repo option handles badly at every
+turn. An in-repo timeline is stored *on the branch the work happened on*, so:
+
+- feature-branch events are invisible to everyone not on that branch — the consensus silently
+  isn't one;
+- rebasing replays timeline commits with new SHAs, rewriting append-only history (§9.2's own rule);
+- squash-merging collapses a week of session events into one commit;
+- deleting an abandoned branch deletes the record of work that really happened;
+- two branches by the same dev on the same day both write `timeline/2026-07/ali.jsonl` — a
+  guaranteed conflict on a file nobody was thinking about;
+- every PR diff carries session-log noise for a reviewer to approve.
+
+A repo with a single branch has none of these. The branch stops being the *location* of an event
+and becomes a *field on* it (`repo` + `branch`), which is strictly more useful — work becomes
+locatable in space as well as time, and "when did this branch start and stop" becomes chartable.
+
+Two knock-on effects: the commit-and-push question (§8.2) mostly dissolves, since the tracking
+commit lands in a repo the `git status` check doesn't even look at; and the views question (§9.2)
+reverses — see the note there.
+
+Full design in [`target-workflow.md`](./target-workflow.md) §2–3.
 
 ### 9.4 Smaller suggestions
 
@@ -504,12 +547,30 @@ duplicate the epic issue, the design has failed. The rule that keeps it honest:
 
 ---
 
-## 10. Open questions to settle before implementing
+## 10. Open questions — resolved
 
-1. `.claude/.tracking/` in every repo, or a dedicated org-level tracking repo? (§9.3)
-2. Merged `status.json` with namespaces, or keep two cursor files? (§4)
-3. Does end-workday commit and push the timeline itself, or just leave it dirty? (§8.2)
-4. Question tree before the briefing, or after? (§8.1)
-5. Record `duration_min` at all? (§6, §9.1)
-6. Are generated views committed or gitignored? (§9.2)
-7. What's the migration path — do existing `state/*.json` values carry over, or do we start clean?
+All seven are settled. The resolved design lives in [`target-workflow.md`](./target-workflow.md);
+this doc is kept as the record of how it got there.
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | In every repo, or a dedicated org-level tracking repo? (§9.3) | **Dedicated repo**, `msa1624/tracking`. Branching settled it. |
+| 2 | Merged `status.json`, or two cursor files? (§4) | **Two files, fully independent, no shared fields.** First merged into one (`snapshot.json`, namespaced), then split back apart once `/snapshot` sharing a file with the workday cursor turned out to recreate the exact ownership confusion the merge was meant to fix — see #8 and #9 below. |
+| 3 | Does end-workday commit and push the timeline? (§8.2) | **Yes**, to the tracking repo only, after showing the diff and confirming. Mostly dissolved by #1. |
+| 4 | Question tree before the briefing, or after? (§8.1) | **The middle option** — one-line glance, then the question, then a briefing scoped by the answer. |
+| 5 | Record `duration_min`? (§6, §9.1) | **No.** Session boundaries give day granularity; an hours number buys little and invites ranking. |
+| 6 | Views committed or gitignored? (§9.2) | **Committed** — safe once there's one branch and a pull-before-regenerate rule. Conflicts are never merged: discard local `views/` and regenerate from the merged timeline. `merge=union` covers `*.jsonl` only, deliberately. |
+| 7 | Migration path for existing `state/*.json`? | **Carry the values over.** The four `workday` fields and `last_checked` map straight into the new namespaces; `session` starts empty and the question tree fills it on first run. |
+| 8 | Where do the local cursor files live, and what are they named? | **`~/.claude/<org>.status.json`** (start/end-workday) and **`~/.claude/<org>.snapshot.json`** (`/snapshot`) — both outside `.claude/.tracking/` entirely, not just outside git tracking within it. `.tracking` is a clone of the shared repo; local-only state can't live somewhere a clone's own git operations (reclone, `git clean`, a bad rebase) could reach. |
+| 9 | Is `project-status` still the right name/trigger for the report skill? | **No — renamed to `/snapshot`, explicitly invoked** instead of auto-triggered by conversational phrasing. Its cursor is `snapshot.json`'s `last_checked`, unnested — there's nothing else in that file to namespace it against. Functionality (three-layer report: this repo, org rollup, who-did-what) is unchanged; only the name, the invocation model, and the file it owns moved. |
+
+| 10 | Does `tracks.yml` store the track's title, owner, and dates? | **No — four fields only** (`id`, `parent`, `status`, `exit_criteria`). Those three all live on the epic issue, so principle 2 forbids duplicating them; readers follow `parent`. What's left is the two things GitHub can't express: a four-state track status, and structured exit criteria. |
+| 11 | May the generated views embed issue state? | **No.** Views build from the timeline and `tracks.yml` alone — no assignees, no statuses, no planned dates. Node labels use the `title` captured on `branch_created`, which is an event (a fact about the past), not a live lookup. Planned-vs-actual moves to `/snapshot`, computed at report time. |
+| 12 | Is old timeline history ever compacted? | **No.** ~10 events/day/dev is a few hundred KB a year; an append-only log rewritten on any schedule isn't append-only. Principle 3 stays absolute. |
+| 13 | Who owns session lifecycle? | **start-workday.** It opens sessions, resumes open ones with an explicit `session_resume` event, and closes abandoned ones (`session_end {inferred:true}`). Recovery belongs here because a developer who abandoned a session is by definition one who didn't run end-workday. |
+| 14 | What happens without push access to the tracking repo? | **end-workday refuses to run**, checking access before it writes anything. Banking events nobody will ever see is worse than not recording them, because only the second is honest. start-workday and `/snapshot` still work, since both only read. |
+
+The naming-collision question that used to be open here is resolved by #8 and #9: `.claude/.tracking/`
+is now clone-only, with no local state inside it, so it no longer collides in meaning with anything
+local, and the skill that used to share a name with its own cursor field (`project-status` /
+`project_status`) no longer does either. See `target-workflow.md` §2, §4, and §8.3.

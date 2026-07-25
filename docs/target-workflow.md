@@ -1,171 +1,282 @@
 # Target Workflow — Org Tracking & Skill Design
 
-> **Status:** design target. Nothing here is implemented; no skill files are edited by this doc.
-> This describes the end state the skills should work toward, not a migration plan.
+> **Status:** design target. This describes the end state the skills work toward. No skill files are
+> edited by this doc.
 
 ---
 
 ## 1. Design Principles
 
-Four rules govern everything below:
+Five rules govern everything below.
 
-1. **State vs. event.** *State* is what's true right now — an issue's status, its assignee, what's
+1. **State vs. event.** *State* is what is true right now — an issue's status, its assignee, what is
    blocking it. *Events* are what happened, when, and by whom. State lives only in GitHub and is
-   always fetched live; it is never cached in the tracking system. Events live only in the
-   timeline and are never re-derived from GitHub after being written, because the past doesn't
-   change. A briefing that needs both fetches state live and joins timeline history in — it never
-   reads current status from the timeline, and never treats a timeline entry as authoritative for
-   anything except history.
-2. **Pointer, not content.** A track's registry entry holds a pointer to its epic issue and the
-   plan (dates, owner, exit criteria) — never a status or description that duplicates the issue.
-   If a field exists in both places, the issue wins and the registry entry stops storing it.
-3. **Append-only.** Timeline events are written once and never rewritten. A correction is a new
-   event, not an edit to an old one.
-4. **No ranking.** The timeline exists to answer "what happened and how do tracks connect," never
-   "who did more." Nothing generated from it compares people against each other.
+   always fetched live; it is never cached anywhere in the tracking system. Events live only in the
+   timeline and are never re-derived from GitHub once written, because the past does not change. A
+   report that needs both fetches state live and joins timeline history against it. Nothing reads
+   current status out of the timeline, and no timeline entry is authoritative for anything but
+   history.
+2. **Pointer, not content.** A track's registry entry holds a pointer to its epic issue plus the
+   handful of facts GitHub cannot express. If a field exists on the issue, the registry does not
+   store it.
+3. **Append-only.** Timeline events are written once and never rewritten, on any schedule, for any
+   reason. A correction is a new event.
+4. **No ranking.** The timeline answers "what happened and how does work connect," never "who did
+   more." Nothing generated from it compares people against each other.
+5. **Out-of-band.** The record of the work never lives on a branch of the work it describes. Branch
+   identity is *data on an event*, never the *location* of an event.
 
 ---
 
 ## 2. System Layout
 
-Everything lives inside the repo you're already working in — no second repo to clone, get access
-to, or remember exists. `.claude/.tracking/` splits into two parts with different git treatment:
+Three pieces — one shared repo and two local files.
 
-- **`status.json`** — gitignored. This machine's cursors and nothing else.
-- **`timeline/`** — committed. The track registry, the per-developer event log, and the generated
-  views. Ordinary files in the ordinary working tree, read and edited the same way any other
-  tracked file is.
+**The tracking repo**, one per org. A GitHub repo holding the track registry, the per-developer
+event log, and the generated views. It contains no application code and runs no CI.
 
-A track can span repos (an epic touching both `msa1624/api` and `msa1624/web`), so two light rules
-keep that from getting tangled:
+```
+msa1624/tracking
+├── README.md                       the format, for anyone who opens the repo cold
+├── .gitattributes                  *.jsonl merge=union — and nothing else (§3)
+├── tracks.yml                      the org-wide track registry
+├── timeline/
+│   ├── 2026-07/
+│   │   ├── ali.jsonl               append-only, one file per developer per month
+│   │   ├── nilendu.jsonl
+│   │   └── priya.jsonl
+│   └── 2026-08/
+└── views/                          generated, never hand-edited
+    ├── gantt.md
+    └── dependencies.md
+```
 
-- **`tracks.yml` lives in the same repo as the track's epic issue.** That's its one home. A track
-  spanning repos still has exactly one registry entry, in the repo where the epic itself lives.
-- **A timeline event lives in whichever repo the developer was in during that session** — the repo
-  `git config --get remote.origin.url` resolves to, same as every other step already does. It
-  references the track by id; nothing needs to be copied between repos for that link to work.
+**Two local cursor files**, one pair per org per machine, gitignored and never shared. They live
+outside `.claude/.tracking/`, which is a clone of a shared repo — a file that must survive a
+reclone, a `git clean`, or a bad rebase inside that clone cannot live where the clone's own git
+operations can reach it. The two are split by **who owns the write**:
 
-An org-wide view (start-workday's full briefing, project-status's rollup) already scans every repo
-in the org via `search_issues`/`search_pull_requests` with an `org:` qualifier — assembling a
-cross-repo Gantt or dependency map means the same skills also read each repo's
-`.claude/.tracking/timeline/` on demand, the same way, rather than there being one file to open.
+- **`status.json`** — where hands-on work stands: the previous session's boundary and the live
+  session. Owned by start-work and end-work.
+- **`snapshot.json`** — when `/snapshot` last ran. Owned by `/snapshot`.
+
+```
+~/.claude/
+├── .tracking/
+│   └── msa1624/                    the working clone; skills pull, append, commit, push here
+├── msa1624.status.json             last + live session — start-work / end-work
+└── msa1624.snapshot.json           /snapshot's cursor — /snapshot
+```
+
+**Product repos get nothing.** No cursor file, no clone, no tracking directory. Nothing this design
+creates lands inside a repo you work in, so none of it appears in a product repo's `git status` and
+no product repo needs a `.gitignore` entry for any of it.
+
+**Write surfaces.** These skills write in exactly three places, and nowhere else:
+
+| Location | Writes permitted |
+|---|---|
+| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff and confirming. |
+| `~/.claude/<org>.{status,snapshot}.json` | Local cursor writes. No git involved. |
+| Product repos | Branch creation and checkout, by start-work only (§8.1). No file contents modified, nothing committed, nothing pushed. |
+
+Everything else — issues, PRs, other people's repos — is read-only.
 
 ```mermaid
 flowchart TB
-    subgraph API["msa1624/api"]
+    subgraph LOCAL["Developer's machine"]
         direction TB
-        API_SJ[(.claude/.tracking/status.json<br/>gitignored)]
-        API_TL[".claude/.tracking/timeline/<br/>committed"]
-    end
-    subgraph WEB["msa1624/web"]
-        direction TB
-        WEB_SJ[(status.json — gitignored)]
-        WEB_TL[timeline/ — committed]
-    end
-    subgraph PLAT["msa1624/platform"]
-        direction TB
-        PLAT_SJ[(status.json — gitignored)]
-        PLAT_TL[timeline/ — committed]
+        subgraph WORK["product checkouts"]
+            direction LR
+            P1["~/work/api"]
+            P2["~/work/web"]
+            P3["~/work/platform"]
+        end
+        STATUS["~/.claude/msa1624.status.json<br/>last + live session"]
+        SNAP["~/.claude/msa1624.snapshot.json<br/>/snapshot's cursor"]
+        CLONE["~/.claude/.tracking/msa1624/<br/><b>clone of the tracking repo</b><br/>tracks.yml · timeline/ · views/"]
     end
 
-    SW[start-workday] -->|reads cursor, this repo| API_SJ
-    SW -->|reads timeline, this repo| API_TL
-    SW -.->|org-wide scan for full briefing| WEB_TL
-    SW -.->|org-wide scan for full briefing| PLAT_TL
+    REMOTE[("msa1624/tracking<br/>one branch, append-only")]
+    GH[("GitHub issues &amp; PRs<br/>current state, always live")]
 
-    EW[end-workday] -->|writes cursor, this repo| API_SJ
-    EW ==>|appends events, regenerates views,<br/>commits + pushes — this repo only| API_TL
+    P1 -.->|session.threads| STATUS
+    P2 -.->|session.threads| STATUS
+    P3 -.->|session.threads| STATUS
+    CLONE <-->|pull / commit / push| REMOTE
 
-    PS[project-status] -->|reads, never writes| API_TL
-    PS -.->|org-wide rollup| WEB_TL
-    PS -.->|org-wide rollup| PLAT_TL
-
-    SW -.->|live state| GH[(GitHub issues/PRs)]
-    EW -.->|live state + writes| GH
-    PS -.->|live state, read-only| GH
+    SW[start-work] --> STATUS
+    SW -->|org → deterministic clone path| CLONE
+    SW -.-> GH
+    EW[end-work] --> STATUS
+    EW ==>|append events, regenerate views,<br/>commit + push| CLONE
+    EW -.->|update statuses| GH
+    PS["/snapshot"] --> SNAP
+    PS -.->|pulls, never authors| CLONE
+    PS -.->|read-only| GH
 ```
+
+One `git pull` on one clone yields every developer, every track, every repo — as local file reads
+rather than API calls fanned out across the org.
 
 ---
 
-## 3. `status.json`
+## 3. The Tracking Repo
 
-One file per machine per repo, gitignored:
+**One branch. The tracking repo is never branched**, and nothing in it is ever force-pushed,
+squashed, or rebased into a different shape. Its history is linear and append-only, which is what
+lets principle 3 hold.
+
+**`merge=union` applies to `*.jsonl` and nothing else.** Timeline files are append-only, so a union
+merge of two developers' appends is always correct. It is deliberately *not* extended to `views/` —
+union-merging two generated Markdown files produces a document that is neither. View conflicts are
+resolved by regeneration instead (§8.2).
+
+**Branch identity lives on the event.** Each thread-scoped event records the `repo` and `branch` the
+work happened in (§6). Work is therefore locatable in space as well as time, and a session spanning
+three repos and three branches still writes to one file.
+
+**Branch names carry the thread number**, in the form `<type>/<repo>-<issue#>-<slug>` — e.g.
+`feat/api-41-checkout`. start-work generates every branch it creates this way (§8.1), so the
+branch→thread link is recoverable from the branch name alone, with no lookup table to maintain.
+
+### Worktrees
+
+One tracking clone is shared by every worktree and every repo on the machine. One `status.json` is
+likewise shared, with each active worktree appearing as an entry in `session.threads[]` (§4.1). A
+session working several worktrees in parallel is the normal case, so the cursor tracks them as a set.
+
+---
+
+## 4. Local Cursor Files
+
+Two files, two owners. Both gitignored, both outside every git repo on the machine.
+
+### 4.1 `status.json` — owned by start-work / end-work
 
 ```json
 {
   "schema": 1,
-  "workday": {
-    "last_started_at": "2026-07-25T09:00:00Z",
-    "last_started_repo": "msa1624/api",
-    "last_ended_at": "2026-07-25T18:20:00Z",
-    "last_ended_repo": "msa1624/api"
+  "org": "msa1624",
+  "last_session": {
+    "started_at": "2026-07-25T09:00:00Z",
+    "started_repo": "msa1624/api",
+    "ended_at": "2026-07-25T18:20:00Z",
+    "ended_repo": "msa1624/api"
   },
-  "project_status": {
-    "last_checked": "2026-07-25T05:26:35Z"
-  },
-  "active": {
-    "track": "payments-v2",
-    "thread": "msa1624/api#41",
-    "since": "2026-07-23T10:00:00Z"
+  "session": {
+    "id": "2026-07-25-nilendu-01",
+    "started_at": "2026-07-25T09:00:00Z",
+    "threads": [
+      { "track": "payments-v2",    "thread": "msa1624/api#43",      "repo": "msa1624/api",      "branch": "feat/api-43-refunds",       "worktree": "~/work/api" },
+      { "track": "payments-v2",    "thread": "msa1624/web#22",      "repo": "msa1624/web",      "branch": "feat/web-22-payment-ui",    "worktree": "~/work/web" },
+      { "track": "auth-hardening", "thread": "msa1624/platform#12", "repo": "msa1624/platform", "branch": "fix/platform-12-ratelimit", "worktree": "~/work/platform" }
+    ]
   }
 }
 ```
 
-Three namespaces, three audiences:
+- **`last_session`** — where the previous session began and ended. This is the "since you left off"
+  boundary; it is not a calendar cursor and carries no assumption that the previous session was
+  yesterday.
+- **`session`** — the live session: its id, when it opened, and every thread it has touched, each
+  with the repo, branch, and local worktree path work is happening in. A list, not a single pointer.
+  Absent when no session is open.
 
-- **`workday`** — the daily start/end-workday cursor, for whoever is doing the hands-on work.
-- **`project_status`** — the report-cadence cursor, for whoever is checking in on status (a
-  product manager, or anyone else in that role) rather than doing the work itself.
-- **`active`** — the live track/thread pointer that start-workday's question tree reads and
-  writes. Belongs to the `workday` side.
+end-work moves the closing session into `last_session` and clears `session`. At most one session is
+open at a time.
 
-`project_status` may read `workday` but never write it, and vice versa. `.gitignore` targets this
-file specifically (`.claude/.tracking/status.json`), not its parent directory — the parent holds
-committed files too.
+`session.threads[].worktree` is load-bearing: it is the list end-work iterates to enforce the
+iron law across every repo a session touched (§8.2).
+
+### 4.2 `snapshot.json` — owned by `/snapshot`
+
+```json
+{
+  "schema": 1,
+  "org": "msa1624",
+  "last_checked": "2026-07-25T05:26:35Z"
+}
+```
+
+That is the whole file. `/snapshot` reads `last_checked` to offer "since last check" as a report
+window, and overwrites it at the end of each run.
+
+### No cross-reads
+
+The two files share no fields, and neither skill opens the other's. The tracking clone's location is
+not recorded in either: `~/.claude/.tracking/<org>/` is a deterministic path from `org`, which every
+skill derives from `git config --get remote.origin.url`. Bootstrap-if-missing and pull-before-use
+(§9) run on every invocation regardless, so there is nothing to cache.
 
 ---
 
-## 4. Tracks & Threads
+## 5. Tracks & Threads
 
-- **Track** — a set of related tasks. An epic: "Payments v2," "Q3 auth hardening." Spans repos and
-  weeks, has an owner, a target date, and exit criteria.
-- **Thread** — one unit of work inside a track. Normally one GitHub issue, plus the PRs and commits
-  that close it.
+- **Track** — a set of related work. An epic: "Payments v2," "Q3 auth hardening." Spans repos and
+  weeks; has an owner, a target date, and exit criteria.
+- **Thread** — one unit of work inside a track. One GitHub issue, plus the PRs, branches, and
+  commits that close it.
 
-Every thread has an issue, and every issue created through the org's tooling already carries
-Priority, Effort, Start date, and Target date — so every thread already has the dates a Gantt
-chart needs. Parent/child structure comes from real GitHub sub-issues, not a shadow hierarchy.
+Every thread has an issue, and **every issue carries the org's standard project fields**, set at
+creation:
 
-`tracks.yml` is the registry — pointer and plan only:
+| Field | Purpose |
+|---|---|
+| Priority | Ordering within a track |
+| Size | Coarse t-shirt bucket, for planning at track level |
+| Estimate | Numeric estimate, for planning at thread level |
+| Effort | Recorded effort, compared against Estimate |
+| Start date | Planned start — the "planned" half of planned-vs-actual (§8.3) |
+| Target date | Planned finish — likewise |
+| Milestone | The release or checkpoint the thread ships in |
+| Relationships | Structured blocks / blocked-by / relates-to links between issues |
+
+**These are never guessed.** A value the conversation has not established is asked for, not invented
+— an estimate nobody stated is not a field to fill in with a plausible number.
+
+Start date and Target date are what make a thread's *planned* dates exist at all, which is what
+`/snapshot` charts actuals against. Relationships and Milestone are live issue state and are read
+live wherever they are needed; neither is copied into the timeline or `tracks.yml`.
+
+Parent/child structure comes from GitHub sub-issues, not a shadow hierarchy. **A milestone is not a
+track** — a milestone is a shipping checkpoint owned by GitHub, a track is a registry entry owned by
+`tracks.yml`, and one track's threads may span several milestones.
+
+`tracks.yml` is the org-wide registry, and has one home: the tracking repo. A track spanning
+`msa1624/api` and `msa1624/web` is a single entry.
 
 ```yaml
 - id: payments-v2
-  title: Payments v2
-  parent: msa1624/api#38          # the epic issue — content lives here
-  owner: nilendu
-  started: 2026-07-14
-  target: 2026-08-15
+  parent: msa1624/api#38          # the epic issue — title, owner, dates all live here
   status: active                  # active | paused | done | abandoned
   exit_criteria: "checkout flow live for 100% of traffic"
 - id: auth-hardening
-  title: Q3 auth hardening
   parent: msa1624/platform#12
-  owner: priya
-  started: 2026-07-21
-  target: 2026-09-01
   status: active
   exit_criteria: "all endpoints behind rate limiter, pen-test clean"
 ```
 
-`status` and `exit_criteria` are the two fields that belong here rather than the issue: they're
-what let a track close instead of just quietly running out of events.
+**Four fields, per principle 2.** A track's title, owner, start date, and target date live on the
+epic issue, so they are not duplicated here — anything needing them follows `parent` and reads them
+live. `id` is the stable slug timeline events reference; `parent` is the pointer. The remaining two
+are the facts GitHub cannot express:
+
+- **`status`** — four states where an issue offers open or closed. A paused track is not a closed
+  one; an abandoned track is not a finished one.
+- **`exit_criteria`** — a structured, checkable definition of done. As prose in the epic's body
+  nothing could read it. Without it a track never closes; it stops generating events and leaves a
+  permanent bar on the Gantt.
+
+A track as a *reader* sees it — dates, owners, and statuses joined live from the issues, not as any
+one file stores it. Only the id, `parent`, status, and exit criteria come from `tracks.yml`.
 
 ```mermaid
 flowchart TB
-    T1["<b>Track: payments-v2</b><br/>epic msa1624/api#38<br/>2026-07-14 → 2026-08-15<br/>exit: checkout live @ 100% traffic"]
-    T1 --> H1["Thread: api#41<br/>checkout endpoint<br/>@ali · done"]
-    T1 --> H2["Thread: api#43<br/>refund flow<br/>@nilendu · in progress"]
-    T1 --> H3["Thread: web#22<br/>payment UI<br/>@priya · blocked"]
+    T1["<b>Track: payments-v2</b><br/>epic msa1624/api#38<br/>2026-07-14 → 2026-08-15 (from the issue)<br/>exit: checkout live @ 100% traffic"]
+    T1 --> H1["Thread: api#41 · checkout endpoint<br/>@ali · done<br/>branch feat/api-41-checkout"]
+    T1 --> H2["Thread: api#43 · refund flow<br/>@nilendu · in progress<br/>branch feat/api-43-refunds"]
+    T1 --> H3["Thread: web#22 · payment UI<br/>@priya · blocked"]
     H1 --> C1["PR api#44 · 6 commits"]
     H2 --> C2["PR api#47 · 3 commits"]
     H3 -.->|blocked by| H2
@@ -173,192 +284,401 @@ flowchart TB
 
 ---
 
-## 5. Event Timeline
+## 6. Event Timeline
 
-One file per developer per month: `timeline/2026-07/<dev>.jsonl`. This naming means two
-developers wrapping up at the same time never touch the same file — no merge conflicts in the
-common case. The same developer on two machines can still collide, and appended JSONL lines are
-about the cheapest conflict there is to resolve; a `merge=union` `.gitattributes` entry for
-`*.jsonl` auto-resolves it.
+One file per developer per month: `timeline/YYYY-MM/<dev>.jsonl`. Two developers wrapping up
+simultaneously never touch the same file; the same developer on two machines can, and `merge=union`
+resolves appended lines automatically.
 
 ```jsonl
-{"schema":1,"ts":"2026-07-25T09:02:11Z","dev":"ali","event":"session_start","track":"payments-v2","thread":"msa1624/api#41","mode":"resume_same"}
-{"schema":1,"ts":"2026-07-25T13:40:00Z","dev":"ali","event":"progress","track":"payments-v2","thread":"msa1624/api#41","commits":["a1b2c3d","e4f5a6b"],"note":"idempotency keys on charge endpoint"}
-{"schema":1,"ts":"2026-07-25T15:10:00Z","dev":"ali","event":"blocked","track":"payments-v2","thread":"msa1624/api#41","blocked_by":["msa1624/platform#12"],"note":"needs the new rate-limit middleware"}
-{"schema":1,"ts":"2026-07-25T18:20:00Z","dev":"ali","event":"session_end","track":"payments-v2","thread":"msa1624/api#41","state":"blocked"}
+{"schema":1,"ts":"2026-07-25T09:02:11Z","session":"2026-07-25-ali-01","dev":"ali","event":"session_start","mode":"resume_same","threads":1}
+{"schema":1,"ts":"2026-07-25T13:40:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"progress","track":"payments-v2","thread":"msa1624/api#41","repo":"msa1624/api","branch":"feat/api-41-checkout","commits":["a1b2c3d","e4f5a6b"],"note":"idempotency keys on charge endpoint"}
+{"schema":1,"ts":"2026-07-25T15:10:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"blocked","track":"payments-v2","thread":"msa1624/api#41","repo":"msa1624/api","branch":"feat/api-41-checkout","blocked_by":["msa1624/platform#12"],"note":"needs the new rate-limit middleware"}
+{"schema":1,"ts":"2026-07-25T18:20:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"session_end","threads_touched":1,"repos_touched":1}
 ```
 
 | Field | Rule |
 |---|---|
 | `schema` | version integer, so the format can evolve without breaking readers of old files |
-| `ts` | UTC, ISO 8601, always — local time makes cross-timezone Gantt charts lie |
-| `dev` | the GitHub handle, matching the identity project-status already attributes work to |
-| `event` | `session_start` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `session_end` |
-| `thread` | always `owner/repo#N`, never bare `#N` |
+| `ts` | UTC, ISO 8601, always — local time makes cross-timezone charts lie |
+| `session` | the session id shared by every event in one sitting. This is what stitches a session together when it fans out across tracks, branches, and repos (§12) |
+| `dev` | the GitHub handle of the person the work is attributed to |
+| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `session_end` |
+| `track` | the `tracks.yml` id this work belongs to. Thread-scoped events only |
+| `thread` | always `owner/repo#N`, never bare `#N`. Thread-scoped events only |
+| `repo` | `owner/repo` — required on every thread-scoped event |
+| `branch` | the branch the work happened on, or `null` on `main`/detached. Never inferred later |
+| `title` | on `branch_created` only: the thread's title as of when work started. A label for the views, never refreshed and never authoritative (§7) |
 | `commits` | short SHAs, so an entry can be checked against git rather than trusted on its word |
+| `note` | one line of free text: what actually happened. Expected on `progress` and `blocked` |
+| `blocked_by` | array of `owner/repo#N` — a dependency hit while working. §7's map is built from this |
+| `mode` | `session_start` only: `resume_same` · `fan_out` · `handoff` · `new_track` |
+| `threads_touched` / `repos_touched` | `session_end` only: counts, so a session's shape is readable without replaying it |
+| `inferred` | `true` on a synthetic `session_end` written for an abandoned session (§8.1). Never set on a recorded event |
 
-There is no duration or hours field. `session_start`/`session_end` timestamps are enough to place
-work on a Gantt at day granularity; a computed "time worked" number invites exactly the kind of
-per-person comparison the no-ranking principle rules out, for very little charting benefit.
+**Session-scoped vs. thread-scoped.** `session_start`, `session_resume`, and `session_end` describe
+the sitting rather than a piece of work, and a session routinely spans several tracks, repos, and
+branches. `track`/`thread`/`repo`/`branch` do not apply to them and are omitted. Every other event
+is thread-scoped and carries all four.
+
+`branch_created` is its own event type rather than a flavour of `progress`: it fixes a thread's
+actual start date, and the Gantt's bars begin there.
+
+**No duration or hours field.** Session boundaries place work on a Gantt at day granularity. A
+computed "time worked" number invites exactly the per-person comparison principle 4 rules out.
+
+**Attribution.** `dev` is the human who triggered the session, matching commit *authorship* — read
+from the author field and `Co-authored-by:` trailers, with bots excluded. An agent-authored commit
+co-authored to a person attributes to that person.
 
 ---
 
-## 6. Generated Views
+## 7. Generated Views
 
-`timeline/views/gantt.md` and `timeline/views/dependencies.md` are committed alongside the
-timeline they're built from, carry a `<!-- GENERATED — do not edit, rebuilt by end-workday -->`
-header, and are rebuilt from `tracks.yml` and the timeline on every end-workday run. A
-regenerating run always pulls the latest `main` first, so it rebuilds from current data rather
-than clobbering someone else's just-pushed events. An org-wide Gantt or dependency map is
-assembled the same way any org-wide briefing is — by reading each repo's views on demand, not by
-copying them into one place.
+`views/gantt.md` and `views/dependencies.md` carry a
+`<!-- GENERATED — do not edit, rebuilt by end-work -->` header and are rebuilt from `tracks.yml`
+and the timeline on every end-work run, after pulling latest.
 
-Planned dates come from the issue's Priority/Effort/Start/Target fields; actual dates come from
-`session_start`/`session_end`/`done` events. Charting both together is the point — the gap between
-plan and reality is what a status report can't otherwise show.
+**They are built from the timeline and `tracks.yml` alone — never from GitHub.** A committed file
+carrying an issue's assignee, status, or planned dates would be a cache of state, wrong the moment
+someone reassigned the issue. Everything rendered here derives from events, which cannot go stale
+because they describe the past.
+
+Node labels show a thread's title, which comes from the `title` recorded on that thread's
+`branch_created` event (§6) — not a live lookup. It is the title as it stood when work began, and it
+stays that way. If the issue is renamed, the view keeps the old label; the event is a record of what
+was true then.
+
+**The Gantt charts actuals only.** Bars run from a thread's `branch_created` to its `done`, or to
+its latest event for work still open. Planned dates live on the issue's Start/Target fields, so
+charting them here would mean caching them here — `/snapshot` reports the planned-vs-actual
+comparison instead, joining live issue data against the timeline at report time (§8.3). A thread
+with no events yet does not appear.
 
 ```mermaid
 gantt
-    title Org tracks — planned vs actual
+    title Org tracks — actual, derived from the timeline
     dateFormat YYYY-MM-DD
     axisFormat %m-%d
 
     section payments-v2
-    checkout endpoint (planned)   :done,    p1, 2026-07-14, 5d
-    checkout endpoint (actual)    :done,    a1, 2026-07-14, 8d
-    refund flow (planned)         :active,  p2, 2026-07-22, 6d
-    refund flow (actual)          :active,  a2, 2026-07-24, 4d
-    payment UI (planned)          :         p3, 2026-07-28, 5d
+    checkout endpoint    :done,    a1, 2026-07-14, 8d
+    refund flow          :active,  a2, 2026-07-24, 4d
 
     section auth-hardening
-    rate limiter (planned)        :active,  p4, 2026-07-21, 7d
-    rate limiter (actual)         :active,  a4, 2026-07-21, 9d
-    pen-test fixes (planned)      :         p5, 2026-08-04, 5d
+    rate limiter         :active,  a4, 2026-07-21, 9d
 ```
 
 ```mermaid
 graph LR
     subgraph api["msa1624/api"]
-        A41["#41 checkout endpoint<br/>@ali · done"]
-        A43["#43 refund flow<br/>@nilendu · in progress"]
+        A41["#41 checkout endpoint"]
+        A43["#43 refund flow"]
     end
     subgraph platform["msa1624/platform"]
-        P12["#12 rate limiter<br/>@priya · in progress"]
+        P12["#12 rate limiter"]
     end
     subgraph web["msa1624/web"]
-        W22["#22 payment UI<br/>@priya · blocked"]
+        W22["#22 payment UI"]
     end
 
     P12 -->|blocks| A41
     A43 -->|blocks| W22
-    A41 -->|relates to| A43
-
-    classDef blocked fill:#f8d7da,stroke:#c00
-    classDef done fill:#d4edda,stroke:#0a0
-    class W22 blocked
-    class A41 done
 ```
 
-Dependency edges come from `#N` / `owner/repo#N` references and "blocks"/"depends on" language in
-issue bodies and comments, plus each event's explicit `blocked_by` field — the edges a person said
-out loud in a session but never wrote into an issue.
+No assignees, no statuses, no colour-coding by state — all of that is live GitHub data, rendered by
+`/snapshot` on request. What survives here is structure, which the timeline owns outright.
+
+Dependency edges here come from one source only: each event's `blocked_by` field — a dependency
+someone actually hit while working, which the timeline owns.
+
+Edges recorded on the issues themselves are **not** baked in, whether they live in the structured
+Relationships field or as `#N` references and "blocks"/"depends on" prose in a body. Both are issue
+state: an issue's relationships can be edited at any time, so a committed copy would be wrong
+without warning. `/snapshot` joins them live to render the fuller map (§8.3), which is also the only
+view that can show the two sources disagreeing — a dependency hit in practice but never recorded on
+the issue, or a Relationship declared on the issue that no session ever ran into.
 
 ---
 
-## 7. Skill Workflows
+## 8. Skill Workflows
 
-### 7.1 start-workday
+### 8.1 start-work
+
+start-work **owns session lifecycle**: it is the only skill that opens a session, resumes one, or
+closes an abandoned one. Recovery belongs here because a developer who abandons a session is, by
+definition, one who did not run end-work.
+
+The branch a developer is standing on is a strong hint about what they are doing, which collapses
+the common case of the question tree into a single confirmation.
 
 ```mermaid
 flowchart TD
-    START([start-workday]) --> READ[Read status.json cursor + active pointer;<br/>read this repo's tracks.yml + timeline directly]
-    READ --> GLANCE[One line: what moved since last_ended_at]
-    GLANCE --> Q1{Continuing existing work,<br/>or starting something new?}
+    START([start-work]) --> SYNC["Pull the tracking clone;<br/>bootstrap it if missing (section 9)"]
+    SYNC --> READ["Read status.json"]
+    READ --> SESS{Open session?}
+    SESS -->|None| NEW["Mark: new session"]
+    SESS -->|"Open, under 36h"| RES["Mark: resuming"]
+    SESS -->|"Open, 36h or older"| STALE["Abandoned — append session_end<br/>{inferred: true} for it now,<br/>clear it, say so in the briefing"]
+    STALE --> NEW
+    NEW --> BR
+    RES --> BR
+    BR["git rev-parse --abbrev-ref HEAD"] --> LOOK{Timeline has events<br/>for this branch?}
+
+    LOOK -->|Yes| PRE["Pre-fill the answer:<br/>on feat/api-41-checkout, so track<br/>payments-v2, thread api#41,<br/>last touched Thursday by you"]
+    LOOK -->|No| GLANCE
+    PRE --> GLANCE["One line: what moved since<br/>last_session.ended_at"]
+
+    GLANCE --> Q1{Continuing existing work,<br/>starting something new,<br/>or just looking?}
 
     Q1 -->|Continuing| Q2{Which?}
-    Q2 -->|Same thread as last session| R1[Resume that thread —<br/>brief = its activity + blockers]
-    Q2 -->|Different in-flight thread of mine| R2[List open threads I own,<br/>pick one, switch active pointer]
-    Q2 -->|Picking up someone's handoff| R3[Find handoff events<br/>addressed to me,<br/>show their carry-over]
+    Q2 -->|"This branch's thread<br/>(pre-selected when known)"| R1["Resume — brief scoped to that<br/>thread's activity and blockers"]
+    Q2 -->|Other in-flight threads| R2["List open threads I own across all<br/>tracks and repos — <b>multi-select</b>,<br/>check out each branch"]
+    Q2 -->|Someone's handoff| R3["Find handoff events addressed to me;<br/>show their carry-over and<br/>the branch they left it on"]
 
     Q1 -->|New work| Q3{Task in an existing track,<br/>or a whole new track?}
-    Q3 -->|Task in an existing track| N1[Pick track from tracks.yml →<br/>create sub-issue under the epic,<br/>all four required fields set]
-    Q3 -->|Brand new track| N2[Create track: epic issue +<br/>tracks.yml entry + first sub-issue]
+    Q3 -->|Existing track| N1["Pick track from tracks.yml,<br/>sub-issue under the epic with every<br/>required field set (section 5),<br/>branch feat/repo-N-slug"]
+    Q3 -->|Brand new track| N2["Epic issue + tracks.yml entry<br/>+ first sub-issue + branch"]
 
-    Q1 -->|Just looking around| BROWSE[Full org briefing,<br/>active pointer left untouched]
+    Q1 -->|Just looking| BROWSE["Full org briefing from the tracking<br/>clone; no session opened,<br/>nothing written"]
 
-    R1 --> BRIEF[Briefing, scoped by the answer]
+    R1 --> BRIEF["Briefing, scoped by the answer"]
     R2 --> BRIEF
     R3 --> BRIEF
     N1 --> BRIEF
     N2 --> BRIEF
     BROWSE --> BRIEF
-    BRIEF --> WRITE[Write cursor + active pointer;<br/>append session_start event]
+    BRIEF --> WRITE["Update status.json session.threads[];<br/>append session_start (with mode)<br/>or session_resume"]
 ```
 
-The one-line glance runs before the question so the answer isn't made blind, but the full
-six-section briefing is filtered by the answer rather than shown in full every time — resuming
-`api#41` leads with that thread's activity and blockers, not an org-wide stale-items list.
-"Just looking around" is a real, deliberate branch: a skill that demands a track before it will
-say anything is a skill people stop running.
+- **An open session is stale after 36h without a close.** The threshold marks abandonment, not a
+  calendar boundary: a session left open that long was walked away from rather than paused, since
+  anyone still working it would have triggered start-work again inside the window and resumed it.
+- **The stale close happens in preflight; the new session's own event waits.** Closing an abandoned
+  session concerns work that is already over and does not depend on the current run's answers, so it
+  is written immediately. `session_start` carries `mode` and the thread list, neither known until the
+  question tree resolves, so it is appended at the end alongside `session.threads[]`.
+- **Re-running start-work on an open session resumes it rather than restarting.** The preflight
+  finds it, appends `session_resume`, and continues with the same id, so a later burst lands inside
+  the existing session instead of forking a second one covering the same work.
+- **The branch lookup is a hint, not a decision.** It pre-selects a default; the developer can always
+  choose otherwise. Standing on `main` with a clean tree simply means no pre-fill.
+- **New work creates the branch**, named from the issue it just created (§3).
+- **"Just looking" opens nothing and writes nothing.** A skill that demands a track before it will
+  say anything is a skill people stop running.
 
-### 7.2 end-workday
+### 8.2 end-work
 
-Iron law, unchanged in spirit: uncommitted or unpushed work blocks a clean handoff, checked first,
-every run, and reported as a top-of-report blocker rather than a footnote. That check runs against
-the developer's own work *before* the timeline is touched, so it always evaluates the tree exactly
-as the developer left it.
+**The iron law: uncommitted or unpushed work blocks a clean handoff.** It is checked first, on every
+run, and reported at the top.
+
+**The check runs in every worktree the session touched**, iterating `session.threads[].worktree` —
+not only the repo the developer happens to be standing in when they wrap up. A session that branched
+in three repos leaves work in three trees, and the developer wraps up in one of them.
+
+**Write access is verified before anything is written.** A developer without push rights to the
+tracking repo does not get a degraded wrap-up that banks events locally forever; the run stops and
+says so (§9).
 
 ```mermaid
 sequenceDiagram
     participant D as Developer
-    participant S as end-workday
+    participant S as end-work
+    participant P as every session worktree
+    participant T as ~/.claude/.tracking/msa1624
     participant G as GitHub
-    participant W as working tree (.claude/.tracking/timeline/)
-    participant L as local status.json
 
     D->>S: wrap up
-    S->>G: git status --short + unpushed check
-    Note over S,G: blocking — the developer's own work,<br/>reported first if anything found
-    S->>L: read cursor + active track/thread
+    S->>S: read status.json (window, session.threads)
+    S->>T: write-access preflight — can I push?
+    Note over S,T: NO ACCESS → STOP before writing anything (§9)
+    S->>P: git status + unpushed check in EVERY session worktree
+    Note over S,P: BLOCKING — the developer's own work,<br/>across every repo the session touched
     S->>G: live issue/PR state for the session window
     S->>G: update statuses, reconcile push activity
-    S->>W: pull latest main, append events for the session
-    S->>W: regenerate gantt.md + dependencies.md
+    S->>T: git pull --rebase
+    S->>T: append events to this month's dev file
+    S->>T: regenerate views/gantt.md + views/dependencies.md
     S->>D: show the timeline diff, ask to confirm
     D->>S: confirm
-    S->>G: commit + push (one commit, timeline only)
+    S->>T: commit + push (one commit, tracking repo only)
+    Note over S,T: push rejected → discard views/, pull --rebase<br/>(jsonl union-merges), regenerate views, push.<br/>NEVER hand-resolve a views/ conflict
     S->>D: report
-    S->>L: write cursor (last_ended_at / repo)
+    S->>S: close the session — move it to last_session
 ```
 
-The timeline write happens *after* the blocking check, is scoped to exactly one commit touching
-only `.claude/.tracking/timeline/`, and is shown to the developer before it's pushed — the same
-confirm-before-acting step every other push-shaped action in these skills already goes through.
-It never gets bundled with, or mistaken for, the developer's own uncommitted work.
+**Blockers are reported grouped by repo**, never as one flat list — three uncommitted files across
+three repos are three separate pieces of work to land. A repo in `session.threads[]` that no longer
+exists on disk is itself reported rather than silently skipped.
 
-### 7.3 project-status
+**View conflicts are discarded and regenerated, never resolved.** On a rejected push: throw away
+local changes under `views/`, `pull --rebase` (only `*.jsonl` remains in play, and `merge=union`
+handles it), regenerate the views from the merged timeline, push again. This is safe because views
+are derived — a regenerated file is always correct, a merged one may be neither developer's output.
 
-Unchanged in shape: read-only, three layers (this repo, org rollup, who-did-what), attribution
-strictly from author/assignee/reviewer fields. It gains one new capability from the timeline:
-**planned vs. actual**, pulled straight from the Gantt view rather than re-derived — a status
-report can now show not just what shipped, but where the plan and the work diverged.
+**A session is bounded by start-work and end-work, not by the calendar.** It may run twenty minutes
+or span several days, and it may be one continuous sitting or a series of bursts. Each invocation
+inside an open session appends `progress` events carrying its id; end-work closes it once.
+
+Two further conditions:
+
+- **The tracking clone is behind or dirty.** Always `pull --rebase` before appending. A clone left
+  dirty by a previous run is surfaced in its own report line, never merged into the developer's
+  uncommitted-work blocker. They are different problems with different fixes.
+- **A transient push failure** (offline, or a race outliving the retry) leaves events on disk,
+  append-only, and reported; they push on the next run. This covers transient failures only — a
+  permissions failure is caught by the preflight and is not a delay.
+
+### 8.3 /snapshot
+
+An **explicitly invoked** command, not a skill that fires on conversational phrasing. A three-layer,
+org-scoped, per-developer report only runs when someone asks for it.
+
+Three layers: current repo detail, org-wide rollup, and who-did-what. Attribution comes strictly
+from author/assignee/reviewer fields.
+
+**Read-only means it never authors.** No events, no commits, no GitHub writes; the only file it
+writes is its own `snapshot.json` cursor. It does clone the tracking repo if missing and pull it
+before every run (§9) — sync is not authorship, and a report built on a stale clone is wrong.
+
+It produces four things neither source can show on its own, each a live join of issue state against
+timeline history — computed at report time and cached nowhere:
+
+- **A complete org rollup, cheaply.** One `git pull` plus local file reads, rather than fanning out
+  across every repo in the org.
+- **Planned vs. actual.** Planned dates fetched live from Start date / Target date, actual dates
+  read from the timeline. The committed Gantt charts actuals only (§7).
+- **Estimate vs. effort.** Estimate and Size are what the work was expected to take; Effort is what
+  was recorded against it, and the timeline shows the sessions it actually took. The three together
+  are how estimates get calibrated, and they are never compared across people (principle 4).
+- **Declared vs. encountered dependencies.** The issues' Relationships field says what was expected
+  to block what; the timeline's `blocked_by` events say what actually did. Each direction of
+  disagreement is worth surfacing — a dependency hit in practice but never declared, and a declared
+  Relationship no session ever ran into.
+
+Milestone is available on every issue and is the natural grouping for a release-shaped report, which
+cuts across tracks rather than following them (§5).
 
 ---
 
-## 8. Guardrails
+## 9. Bootstrap & Access
 
-- **Verifiable, not trusted.** Every `progress` event carries commit SHAs. An entry with no SHAs
-  and no issue reference should render visibly softer in the views than one that's checkable.
-- **`.claude/.tracking/README.md`, committed.** A shared record nobody can read the format of
-  isn't actually shared.
-- **A compliance pass in end-workday** checks that every commit referencing `#N` in the session
-  also has a corresponding timeline event, the same way it already checks for a missing progress
-  comment — one more row in the same "compliance gaps found" report section.
-- **Exit criteria are required on every track.** Without them a track never closes; it just stops
-  generating events and leaves a zombie bar on the Gantt forever.
-- **Day-one bootstrap.** With an empty `tracks.yml`, "task in an existing track" simply isn't an
-  offered option in the start-workday question tree — the flow degrades to "brand new track"
-  without a special case.
-- **Retention.** Monthly files are cheap to keep indefinitely; if the volume ever becomes a
-  problem, compact months older than a year into a per-track summary rather than deleting them —
-  the summary event carries forward what a track's history showed without keeping every session.
+| Situation | Behaviour |
+|---|---|
+| Tracking repo does not exist for the org | Offer to create it — **with confirmation**. Creating a repo is outward-facing and never happens implicitly. |
+| Repo exists, no local clone | Clone to `~/.claude/.tracking/<org>/` — a deterministic path, nothing to record. Whichever of start-work, end-work, or `/snapshot` runs first bootstraps it; the others find it present. |
+| Clone exists but is stale | `git pull --rebase` at the start of every start-work, end-work, and `/snapshot` run. Not conditional on a stored sync timestamp — there isn't one. |
+| Developer has no write access | **end-work refuses to run**, checking push access before writing anything rather than banking events nobody will see. start-work and `/snapshot` work in full, since both only read. A `--local-only` escape hatch exists for someone knowingly accepting an unshared record; it is never the default and never silent. |
+| Empty `tracks.yml` | "Task in an existing track" is not offered in the question tree; the flow degrades to "brand new track" with no special case. |
+
+The skills operate on the tracking repo visibly, not silently. Committing in a directory the
+developer never named is something they are told about, even when it is exactly what they asked for.
+
+---
+
+## 10. Guardrails
+
+- **Verifiable, not trusted.** Every `progress` event carries commit SHAs. An entry with no SHAs and
+  no issue reference renders visibly softer in the views than one that can be checked.
+- **No leaderboards, ever.** Every developer's session log sits in one repo, which is what makes the
+  org view work and what makes principle 4 easy to violate. No generated view ranks or compares
+  people, and no view may be added that does.
+- **`README.md` in the tracking repo, committed.** A shared record whose format nobody can read is
+  not shared. People will find this repo with no context for what wrote it.
+- **A compliance pass in end-work** checks that every commit referencing `#N` during the session
+  has a corresponding timeline event, reported in the same "compliance gaps found" section as a
+  missing progress comment.
+- **Exit criteria are required on every track**, so tracks can close rather than silently stop
+  generating events.
+- **Retention: keep everything, forever.** A developer generating ~10 events a day produces a few
+  hundred KB a year. There is no compaction and no pruning — an append-only log rewritten on any
+  schedule is not append-only.
+- **The timeline stays event-shaped.** If `tracks.yml` accumulates statuses, assignees, or
+  descriptions duplicating the epic issue, it has become a second issue tracker and principle 2 has
+  been abandoned.
+
+---
+
+## 11. Quick Reference
+
+| Question | Answer |
+|---|---|
+| Where does the timeline live? | A dedicated org-level repo, `<org>/tracking`, with exactly one branch. |
+| Where do the local cursors live? | `~/.claude/<org>.status.json` and `~/.claude/<org>.snapshot.json` — outside `.tracking/`, one pair per org per machine. |
+| How many cursor files, and who owns them? | Two, fully independent. `status.json` → start-work / end-work. `snapshot.json` → `/snapshot`. Zero shared fields, no cross-reads. |
+| Where is the tracking clone's path recorded? | Nowhere. `~/.claude/.tracking/<org>/` is derived from `org` on every run. |
+| What does `tracks.yml` store? | Four fields: `id`, `parent`, `status`, `exit_criteria`. |
+| What fields does every issue carry? | Priority, Size, Estimate, Effort, Start date, Target date, Milestone, Relationships — set at creation, never guessed (§5). |
+| Do generated views contain issue state? | No. Timeline and `tracks.yml` only. Every issue-vs-timeline comparison — planned/actual, estimate/effort, declared/encountered dependencies — is computed by `/snapshot` at report time. |
+| Is timeline history ever compacted? | No. |
+| How are `views/` conflicts resolved? | Discarded and regenerated. `merge=union` covers `*.jsonl` only. |
+| Who owns session lifecycle? | start-work — opens, resumes (`session_resume`), and closes abandoned sessions (`session_end {inferred:true}`). |
+| Is duration or hours recorded? | No. |
+| How is branch tracked? | `repo` + `branch` fields on each thread-scoped event, plus the `<type>/<repo>-<issue#>-<slug>` naming convention. |
+| How is a multi-repo session held together? | A `session` id on every event, plus `session.threads[]` in `status.json`. |
+| What if a developer cannot push to the tracking repo? | end-work refuses to run, before writing anything. |
+| Is `/snapshot` auto-triggered? | No — explicitly invoked. |
+
+---
+
+## 12. Worked Example — One Trigger, Many Tracks, Many Repos
+
+A developer triggers Claude at 09:00. Over the session it works on the refund flow and the payment
+UI (both track `payments-v2`, in `msa1624/api` and `msa1624/web`) and on the rate limiter (track
+`auth-hardening`, in `msa1624/platform`). Three repos, three new branches, two tracks, one session.
+
+```mermaid
+flowchart LR
+    DEV["@nilendu triggers Claude<br/>2026-07-25 09:00"] --> S["<b>session</b><br/>2026-07-25-nilendu-01"]
+
+    S --> TR1["track<br/>payments-v2"]
+    S --> TR2["track<br/>auth-hardening"]
+
+    TR1 --> TH1["thread api#43<br/>refund flow"]
+    TR1 --> TH2["thread web#22<br/>payment UI"]
+    TR2 --> TH3["thread platform#12<br/>rate limiter"]
+
+    TH1 --> BR1["msa1624/api<br/>feat/api-43-refunds"]
+    TH2 --> BR2["msa1624/web<br/>feat/web-22-payment-ui"]
+    TH3 --> BR3["msa1624/platform<br/>fix/platform-12-ratelimit"]
+
+    BR1 ==> JL["<b>timeline/2026-07/nilendu.jsonl</b><br/>one file · one repo · one branch<br/>every event tagged session + repo + branch"]
+    BR2 ==> JL
+    BR3 ==> JL
+```
+
+The fan-out converges. Three repos and three branches produce events in one file, in one repo, on
+one branch, because `repo` and `branch` are fields on the event rather than the event's location.
+Nothing is reconciled across repos afterward because nothing was ever split.
+
+```jsonl
+{"schema":1,"ts":"2026-07-25T09:00:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"session_start","mode":"fan_out","threads":3}
+{"schema":1,"ts":"2026-07-25T09:14:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"branch_created","track":"payments-v2","thread":"msa1624/api#43","repo":"msa1624/api","branch":"feat/api-43-refunds","title":"refund flow"}
+{"schema":1,"ts":"2026-07-25T09:31:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"branch_created","track":"auth-hardening","thread":"msa1624/platform#12","repo":"msa1624/platform","branch":"fix/platform-12-ratelimit","title":"rate limiter"}
+{"schema":1,"ts":"2026-07-25T12:05:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"progress","track":"payments-v2","thread":"msa1624/api#43","repo":"msa1624/api","branch":"feat/api-43-refunds","commits":["9f2c1ab"],"note":"refund state machine"}
+{"schema":1,"ts":"2026-07-25T14:40:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"blocked","track":"payments-v2","thread":"msa1624/web#22","repo":"msa1624/web","branch":"feat/web-22-payment-ui","blocked_by":["msa1624/api#43"],"note":"UI needs the refund endpoint shape settled"}
+{"schema":1,"ts":"2026-07-25T18:20:00Z","session":"2026-07-25-nilendu-01","dev":"nilendu","event":"session_end","threads_touched":3,"repos_touched":3}
+```
+
+The `blocked` event records a cross-repo dependency — `web#22` waiting on `api#43` — discovered
+while doing the work. That edge may never be written into either issue, and it is what feeds §7's
+dependency map.
+
+At wrap-up, end-work reads `session.threads[]` and runs the blocking check in all three
+worktrees, not just the one the developer is standing in.
+
+```mermaid
+flowchart TD
+    EW([end-work]) --> LOAD["Read session.threads from<br/>~/.claude/msa1624.status.json"]
+    LOAD --> LOOP["For EVERY worktree in the session"]
+    LOOP --> A["~/work/api<br/>git status + unpushed check"]
+    LOOP --> B["~/work/web<br/>git status + unpushed check"]
+    LOOP --> C["~/work/platform<br/>git status + unpushed check"]
+    A --> AGG{Anything dirty<br/>in any of them?}
+    B --> AGG
+    C --> AGG
+    AGG -->|Yes| BLOCK["BLOCKING section, grouped by repo,<br/>at the top of the report"]
+    AGG -->|No| OK["Clean — proceed to reporting"]
+    BLOCK --> REST["Timeline append + push happens either way:<br/>the boundary records when you stopped,<br/>not whether the handoff was clean"]
+    OK --> REST
+```
