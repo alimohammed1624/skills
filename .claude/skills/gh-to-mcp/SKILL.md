@@ -1,36 +1,29 @@
 ---
 name: gh-to-mcp
-description: Use when you are about to run a `gh` CLI command (or the user pastes one) in this repository — translates it into the equivalent plugin:github:github MCP tool call, including issue fields ("Projects"-style Priority/Effort/dates), issue types, and sub-issue hierarchy
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting Priority/Effort/dates or issue types on an issue, or when writing scripts that assume the `gh` CLI is available
 ---
 
 # gh CLI → plugin:github:github MCP
 
 ## Overview
 
-This repository's agent workflows (see [AGENTS.md](../../../AGENTS.md) and the
-[start-workday](../start-workday/SKILL.md) / [end-workday](../end-workday/SKILL.md) /
-[project-status](../project-status/SKILL.md) skills) use the `plugin:github:github` MCP server
-exclusively — not the `gh` CLI binary. If you or the user reach for a `gh` command, don't shell
-out to it. Translate it to the matching MCP tool call instead, so org-level enforcement (Issue
-Fields, issue types) stays consistent.
+This repo's agent workflows use the `plugin:github:github` MCP server exclusively — never the `gh` CLI binary. Translate the command instead of shelling out, so org-level enforcement (Issue Fields, issue types) stays intact.
 
-**Always infer `owner`/`repo` from `git config --get remote.origin.url`** when the `gh` command
-doesn't specify `-R owner/repo` explicitly, matching the convention used by start-workday/end-workday.
+**Core principle:** Don't shell out. Translate. If there's no equivalent tool, say so rather than improvising.
 
-**Call `mcp__plugin_github_github__get_me` first** if a command needs the current user's identity
-(e.g. `gh issue list --assignee @me`), the same way the GitHub MCP server's own instructions
-recommend.
+**Owner/repo:** infer from `git config --get remote.origin.url` whenever the `gh` command doesn't pass `-R owner/repo`.
+
+**Identity:** call `get_me` first when a command needs the current user (e.g. `gh issue list --assignee @me`).
 
 ## When to Use
 
-- You're about to run `gh issue ...`, `gh pr ...`, `gh repo ...`, `gh release ...`, or any other
-  `gh` subcommand in this repo
+- About to run `gh issue ...`, `gh pr ...`, `gh repo ...`, `gh release ...`, or any other `gh` subcommand
 - The user pastes a `gh` command and asks you to run it
-- You're writing a script or instructions that currently assume the `gh` CLI is available
+- Writing a script or instructions that assume the `gh` CLI is available
 
-## Core Translation Table
+The start-workday, end-workday, and project-status skills all route their GitHub access through here.
 
-### Issues
+## Issues
 
 | `gh` command | MCP tool call |
 |---|---|
@@ -40,15 +33,15 @@ recommend.
 | `gh issue list --search "..."` | `search_issues(query: "repo:owner/repo ...")` |
 | `gh issue view N` | `issue_read(owner, repo, issue_number: N, method: "get")` |
 | `gh issue view N --comments` | `issue_read(..., method: "get_comments")` |
-| `gh issue create -t "..." -b "..."` | `issue_write(method: "create", owner, repo, title, body, ...)` — **see [Issue Fields](#issue-fields-this-repos-projects-equivalent) below, this repo requires four fields on every create** |
-| `gh issue edit N --add-label X` | `issue_write(method: "update", issue_number: N, labels: [...])` (labels array replaces; fetch current labels first via `issue_read(..., method: "get_labels")` if adding to existing) |
+| `gh issue create -t "..." -b "..."` | `issue_write(method: "create", owner, repo, title, body, ...)` — **see [Issue Fields](#issue-fields--this-repos-projects-equivalent); this repo requires four fields on every create** |
+| `gh issue edit N --add-label X` | `issue_write(method: "update", issue_number: N, labels: [...])` — the array replaces; fetch current labels via `issue_read(..., method: "get_labels")` first when adding |
 | `gh issue edit N --add-assignee user` | `issue_write(method: "update", issue_number: N, assignees: [...])` |
 | `gh issue close N` | `issue_write(method: "update", issue_number: N, state: "closed", state_reason: "completed")` |
 | `gh issue close N --reason "not planned"` | `issue_write(..., state: "closed", state_reason: "not_planned")` |
 | `gh issue comment N -b "..."` | `add_issue_comment(owner, repo, issue_number: N, body: "...")` |
 | `gh issue reopen N` | `issue_write(method: "update", issue_number: N, state: "open")` |
 
-### Pull Requests
+## Pull Requests
 
 | `gh` command | MCP tool call |
 |---|---|
@@ -64,19 +57,19 @@ recommend.
 | `gh pr ready N` | `update_pull_request(..., draft: false)` |
 | `gh pr review N --approve -b "..."` | `pull_request_review_write(method: "create", event: "APPROVE", body)` |
 | `gh pr review N --request-changes -b "..."` | `pull_request_review_write(method: "create", event: "REQUEST_CHANGES", body)` |
-| `gh pr comment N -b "..."` | `add_issue_comment(owner, repo, issue_number: N, body: "...")` (PR comments use the issue-comment endpoint) |
+| `gh pr comment N -b "..."` | `add_issue_comment(owner, repo, issue_number: N, body: "...")` — PR comments use the issue-comment endpoint |
 | `gh pr merge N --squash` | `merge_pull_request(owner, repo, pullNumber: N, merge_method: "squash")` |
 | `gh pr update-branch N` | `update_pull_request_branch(owner, repo, pullNumber: N)` |
 
-### Repo / Branches / Commits / Files
+## Repo / Branches / Commits / Files
 
 | `gh` command | MCP tool call |
 |---|---|
 | `gh repo view owner/repo` | `get_file_contents(owner, repo, path: "/")` for tree, or `search_repositories` for metadata |
 | `gh repo create name --private` | `create_repository(name, private: true)` |
 | `gh repo fork` | `fork_repository(owner, repo)` |
-| `gh api repos/.../branches` / `git branch -r` equivalent | `list_branches(owner, repo)` |
-| `gh api .../git/refs` for new branch | `create_branch(owner, repo, branch, from_branch?)` |
+| `gh api repos/.../branches` | `list_branches(owner, repo)` |
+| `gh api .../git/refs` for a new branch | `create_branch(owner, repo, branch, from_branch?)` |
 | `git log` remote equivalent | `list_commits(owner, repo, sha?, author?, since?, until?)` |
 | `gh api .../commits/SHA` | `get_commit(owner, repo, sha)` |
 | reading a file at a ref | `get_file_contents(owner, repo, path, ref?)` |
@@ -87,7 +80,7 @@ recommend.
 | `gh release view` / `--tag` | `get_release_by_tag(owner, repo, tag)` or `get_latest_release(owner, repo)` |
 | `git tag` remote lookup | `get_tag(owner, repo, tag)` |
 
-### Search
+## Search
 
 | `gh` command | MCP tool call |
 |---|---|
@@ -97,7 +90,7 @@ recommend.
 | `gh search code "..."` | `search_code(query: "...")` |
 | `gh search commits "..."` | `search_commits(query: "...")` |
 
-### Users / Teams / Collaborators
+## Users / Teams / Collaborators
 
 | `gh` command | MCP tool call |
 |---|---|
@@ -107,7 +100,7 @@ recommend.
 | `gh api repos/.../collaborators` | `list_repository_collaborators(owner, repo, affiliation?)` |
 | `gh api search/users` | `search_users(query)` |
 
-### Copilot
+## Copilot
 
 | `gh` command | MCP tool call |
 |---|---|
@@ -118,42 +111,56 @@ recommend.
 
 ## Issue Fields — this repo's "Projects" equivalent
 
-There is no `gh project` (classic GitHub Projects v2 board) tool exposed by
-`plugin:github:github` in this environment. What this org uses instead — and what `AGENTS.md`
-enforces — is **org-level Issue Fields** (Settings > Planning > Issue fields: Priority, Effort,
-Start date, Target date). Treat requests like "add this to the project" or "set the project
-fields" as requests to set these issue fields, not as a classic Projects board operation.
+`plugin:github:github` exposes no `gh project` (Projects v2 board) tool in this environment. What this org uses instead is **org-level Issue Fields** (Settings > Planning > Issue fields: Priority, Effort, Start date, Target date). Read "add this to the project" or "set the project fields" as a request to set these fields, not as a board operation.
 
 | Intent (often phrased like a `gh project` action) | MCP tool call |
 |---|---|
-| List available custom fields / their valid options | `list_issue_fields(owner, repo?)` — omit `repo` for org-level fields |
+| List available custom fields and their valid options | `list_issue_fields(owner, repo?)` — omit `repo` for org-level fields |
 | List issue types (epic/task/bug, if enabled) | `list_issue_types(owner, repo?)` |
 | Set Priority/Effort/dates on create | `issue_write(method: "create", ..., issue_fields: [{field_name: "Priority", field_option_name: "High"}, {field_name: "Effort", field_option_name: "Medium"}, {field_name: "Start date", value: "YYYY-MM-DD"}, {field_name: "Target date", value: "YYYY-MM-DD"}])` |
 | Update a single field later | `issue_write(method: "update", issue_number, issue_fields: [{field_name: "...", field_option_name/value: "..."}])` |
 | Clear a field | `issue_write(..., issue_fields: [{field_name: "...", delete: true}])` |
-| Filter/list issues by a custom field (e.g. "show High priority issues") | `list_issues(owner, repo, field_filters: [{field_name: "Priority", value: "High"}])` |
+| Filter issues by a custom field ("show High priority issues") | `list_issues(owner, repo, field_filters: [{field_name: "Priority", value: "High"}])` |
 | Set issue type | `issue_write(..., type: "...")` — validate against `list_issue_types` first |
 | Add a sub-issue / break work into children | `sub_issue_write(method: "add", owner, repo, issue_number, sub_issue_id)` |
 | Move a sub-issue to a different parent | `sub_issue_write(method: "add", ..., replace_parent: true)` |
 | Reorder sub-issues | `sub_issue_write(method: "reprioritize", ..., after_id/before_id)` |
 | Remove a sub-issue link | `sub_issue_write(method: "remove", ...)` |
-| Read an issue's hierarchy (parent/children) | `issue_read(..., method: "get_sub_issues")` / `method: "get_parent")` |
+| Read an issue's hierarchy | `issue_read(..., method: "get_sub_issues")` / `method: "get_parent"` |
 
-Per `AGENTS.md`, **every `issue_write` with `method: "create"` in this repo must include all
-four Issue Fields** (Priority, Effort, Start date, Target date) with validated option
-names/dates — self-check this before calling the tool, and ask the user rather than guessing if
-a value isn't obvious from the conversation.
+**Every `issue_write` with `method: "create"` must include all four Issue Fields** — Priority, Effort, Start date, Target date — with validated option names and dates. Self-check before calling. Ask the user rather than guessing when a value isn't obvious from the conversation.
 
-## Notes
+## Red Flags — STOP
 
-- `gh` flags that map to pagination (`--limit`, `-L`) become `perPage`/`page` params; keep batches
-  to 5-10 items per the GitHub MCP server's own context-management guidance, and pass
-  `minimal_output: true` on `search_repositories` when full objects aren't needed.
-- For `search_*` tools, don't put `sort:` inside the query string — use the dedicated `sort`/`order`
-  parameters instead.
-- `gh` commands with no listed equivalent (e.g. `gh workflow`, `gh secret`, `gh gist`, `gh alias`,
-  `gh extension`) have no corresponding tool on this MCP server — say so explicitly rather than
-  improvising a call, and ask the user how they'd like to proceed.
-- When a `gh` command would send a message, merge, delete, or otherwise take an irreversible action
-  on GitHub, the usual confirm-before-acting rules still apply — translating the command doesn't
-  bypass that.
+- About to run `gh` in a Bash call in this repo
+- Creating an issue without all four Issue Fields
+- Guessing a Priority or Effort value the conversation never established
+- Putting `sort:` inside a `search_*` query string
+- Inventing a tool name because no row in these tables matched
+- Translating a merge, delete, or send and treating the translation as approval
+
+## Quick Reference
+
+| Situation | Action |
+|-----------|--------|
+| `gh` command in hand | Look it up in the tables above; never shell out |
+| Owner/repo not given | Infer from `git config --get remote.origin.url` |
+| Command needs "me" | `get_me()` first |
+| `--limit` / `-L` flags | Map to `perPage`/`page`; keep batches to 5–10 items |
+| Full objects not needed | Pass `minimal_output: true` |
+| Sorting a search | Use the `sort`/`order` params, not the query string |
+| Adding a label to existing ones | Fetch current labels first — the array replaces |
+| No equivalent tool exists | Say so explicitly, ask how to proceed |
+| Translation is irreversible (merge/delete/send) | Confirm-before-acting still applies |
+
+## Common Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "`gh` is installed and it's one command" | Shelling out bypasses org-level Issue Fields and issue-type enforcement. That's the whole reason this skill exists. |
+| "The user pasted the `gh` command, so they want it run" | They want the outcome. Translate it. |
+| "I'll fill in Priority/Effort with something reasonable" | Guessed field values look identical to real ones downstream. Ask. |
+| "This one field can be filled in later" | All four are required at create time. Later doesn't happen. |
+| "No table row matches, but this tool name looks right" | Improvised calls fail or do the wrong thing. `gh workflow`, `gh secret`, `gh gist`, `gh alias`, `gh extension` have no equivalent here — say so. |
+| "`sort:` in the query works in the GitHub UI" | The `search_*` tools take dedicated `sort`/`order` params. Query strings hold criteria only. |
+| "I translated the merge command, so it's approved" | Translation isn't consent. Confirm irreversible actions first. |

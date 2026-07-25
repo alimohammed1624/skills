@@ -7,126 +7,107 @@ description: Use when a product manager (or anyone) wants a status snapshot of t
 
 ## Overview
 
-A PM-facing status report with two layers: a detailed look at the **current repo** (the one
-the session is in), and an **org-wide rollup** across every repo in the org, matching the scope
-`start-workday`/`end-workday` already use. Unlike those two skills, this one is explicitly about
-"what happened" over a chosen time window, not "what to do today" — so it always starts by
-asking (or being told) which window to use.
+A PM-facing report in two layers: detail on the **current repo**, then an **org-wide rollup**. Unlike the workday skills, this one answers "what happened over a window," not "what should I do today" — so it always establishes the window first.
 
-All GitHub access goes through the `plugin:github:github` MCP server. If translating a `gh`
-command, see the [gh-to-mcp](../gh-to-mcp/SKILL.md) skill first.
+**Core principle:** Report, never write. Read the state file before offering options. Identify work by title, not by number.
+
+**Announce at start:** "I'm using the project-status skill to put together a status report."
 
 ## When to Use
 
-- A PM (or anyone) wants to know "where do things stand" on the current project and across the org
+- Someone asks "where do things stand" on this project and across the org
 - You need a work-done summary for a standup, retro, or stakeholder update
-- You want to see how issues/PRs across repos map to each other (dependencies, blockers)
+- You want to see how issues and PRs across repos map to each other
+
+**Don't use for:** today's open-work triage — use start-workday, which is scoped to what's open rather than to a time window.
+
+**This skill never writes to GitHub.** No comments, no field updates, no closures. If the user wants changes made based on the report, that's a separate follow-up request.
+
+**REQUIRED SUB-SKILL:** Use gh-to-mcp before running any `gh` command. All GitHub access goes through the `plugin:github:github` MCP server.
 
 ## Step 0: Determine the Time Window
 
-**First, read the local state file (see below) — before presenting any options to the user.**
-The presence and contents of that file change what you should offer, so the check has to happen
-up front, not after the user has already picked "since last check":
+**Read the state file before presenting any options to the user.** Its contents change what you may offer, so this cannot happen after the user has already picked.
 
-- **If a valid `last_checked` timestamp exists**, offer "Since last check" as a real option and
-  show the user *when* that was (e.g. "Since last check (2026-07-20 14:30 UTC)") so they can
-  judge whether it's a useful window. Don't make them choose it blind and only then find out it's
-  stale or missing.
-- **If the file is absent or malformed**, do **not** offer "Since last check" as if it will work.
-  Say plainly that there's no prior check on record, and present only the other options.
-
-Then ask the user which window to report on, unless they already specified one in their request:
-
-1. **Since last check** — use the timestamp already read from the state file above. (Only offer
-   this when that read succeeded; never fabricate a timestamp.)
-2. **Past day** — `updated:>=YYYY-MM-DD` for today.
-3. **Past week** — `updated:>=YYYY-MM-DD` for 7 days ago.
-4. **Custom** — ask for explicit start (and optionally end) dates.
-
-Convert relative language ("since Monday", "yesterday") to absolute `YYYY-MM-DD` before
-building any query.
-
-### Local state file (for "since last check")
-
-This skill is the one exception to the "no local snapshot" rule the workday skills follow —
-it needs a timestamp, not a data cache, so staleness isn't a concern the same way.
-
-State lives at `.claude/skills/project-status/.state.json` (gitignored, machine-local):
+State lives at `.claude/state/project-status.json` (gitignored, machine-local):
 ```json
 { "last_checked": "YYYY-MM-DDTHH:MM:SSZ" }
 ```
 
-- At the **very start** of every run — before you present time-window options to the user —
-  read this file. Its state determines which options are valid to offer and lets you show the
-  user when the last check was (see Step 0).
-- At the **end** of every run (regardless of which window was chosen), overwrite it with the
-  current timestamp, so the next "since last check" run has a fresh anchor.
-- If the file doesn't exist or is malformed, treat it as "no prior check" — never fabricate a
-  timestamp, and don't offer "Since last check" as a working option.
+This is a **report cursor** — when this report was last run. It is not a workday boundary. `.claude/state/workday.json` in the same directory belongs to the workday skills; never read your window from it, and never write to it.
 
-## Step 1: Detect Current Project and Organization
+| State file | What you may offer |
+|------------|--------------------|
+| Valid `last_checked` timestamp | "Since last check" — and show *when* that was, e.g. "Since last check (2026-07-20 14:30 UTC)", so the user can judge whether it's useful |
+| Absent or malformed | Say plainly there's no prior check on record. Offer only the other options. |
 
-```
+Then ask which window, unless the request already specified one:
+
+1. **Since last check** — the timestamp read above. Only offer when that read succeeded.
+2. **Past day** — `updated:>=YYYY-MM-DD` for today
+3. **Past week** — `updated:>=YYYY-MM-DD` for 7 days ago
+4. **Custom** — ask for explicit start, and optionally end, dates
+
+Convert relative language ("since Monday", "yesterday") to absolute `YYYY-MM-DD` before building any query.
+
+At the **end** of every run, whichever window was chosen, overwrite the state file with the current timestamp so the next "since last check" has a fresh anchor.
+
+## The Process
+
+### Step 1: Detect Project and Organization
+
+```bash
 git config --get remote.origin.url
-  → parse to extract owner (org) and repo (current project)
 ```
 
-The current repo drives the "Current Project" section (Step 2); the owner drives the org-wide
-rollup (Step 3).
+Parse out both owner (org) and repo. The repo drives Step 2; the owner drives Step 3.
 
-## Step 2: Current Project Detail
+### Step 2: Current Project Detail
 
-Scoped to just this repo, for the chosen window:
+Scoped to this repo, for the chosen window:
 
 ```
-list_issues(owner, repo, state: "all")               → filter/inspect updated_at against window
-list_pull_requests(owner, repo, state: "all")         → filter/inspect updated_at against window
+list_issues(owner, repo, state: "all")          → filter updated_at against window
+list_pull_requests(owner, repo, state: "all")   → filter updated_at against window
 search_issues(query: "repo:{owner}/{repo} state:closed closed:{window}")
 search_pull_requests(query: "repo:{owner}/{repo} state:merged merged:{window}")
 ```
 
-For each item in-window, use `issue_read` / `pull_request_read` to get enough detail (title,
-labels, Priority/Effort/dates from `issue_fields`, linked issues) to summarize what changed.
+For each in-window item, use `issue_read` / `pull_request_read` to get title, labels, Priority/Effort/dates, and linked issues.
 
-Report:
+Report three groups:
 - **Shipped this window** — merged PRs, closed issues
-- **In progress** — open issues/PRs touched in the window, with their Priority/Effort/dates
-- **Untouched backlog** — open issues not updated in the window (still worth surfacing size, not detail)
+- **In progress** — open items touched in the window, with Priority/Effort/dates
+- **Untouched backlog** — open issues not updated in the window (surface the count, not the detail)
 
-## Step 3: Org-Wide Rollup
-
-Same shape as `start-workday`, but scoped to the window instead of "currently open":
+### Step 3: Org-Wide Rollup
 
 ```
 search_issues(query: "org:{owner} updated:{window}")
 search_pull_requests(query: "org:{owner} updated:{window}")
 ```
 
-Group results by repo. For each repo, note: items shipped, items in progress, and repo-level
-activity level (active / quiet) for the window.
+Group by repo. Per repo: items shipped, items in progress, activity level (active / quiet).
 
-## Step 4: Map Dependencies
+### Step 4: Map Dependencies
 
-Across everything gathered in Steps 2–3, look for relationships the same way `start-workday`
-does:
-
-- `#N` (same-repo) and `owner/repo#N` (cross-repo) references in bodies/comments
+Across everything from Steps 2–3:
+- `#N` (same-repo) and `owner/repo#N` (cross-repo) references in bodies and comments
 - Keywords: "blocks", "blocked by", "depends on", "relates to", "duplicate of"
-- Whether the current project's open items are blocked by, or blocking, work in other repos
+- Whether this project's open items are blocked by, or blocking, work elsewhere
 
-Present this as a short dependency map — plain statements, not a graph. **This section is read
-by a product manager who is skimming, not cross-referencing issue numbers.** So identify each
-item by its **issue title, rendered as a markdown link to the issue**, not by a bare `#N`. The
-number is noise to a PM; the title is the thing they already have a mental model of.
+**This section is read by a PM who is skimming, not cross-referencing.** Identify each item by its **title, rendered as a markdown link**, never by a bare number:
 
-- Use the title as the link text: `[Fix auth bug in login flow](https://github.com/owner/repo/issues/2)`.
-- Keep the relationship phrasing plain and human: "X is blocked by Y (still open)".
-- Optionally append a bare `#N` in parentheses only when it aids a follow-up lookup — never as
-  the primary identifier.
-- A PM should be able to read a bullet once and understand the dependency without opening
-  GitHub or decoding numbers.
+- Link text is the title: `[Fix auth bug in login flow](https://github.com/owner/repo/issues/2)`
+- Phrase relationships plainly: "X is blocked by Y (still open)"
+- Append a bare `#N` in parentheses only as a lookup aid, never as the primary identifier
+- Put `owner/repo` disambiguation in the URL you're building anyway, not in the visible text
 
-## Step 5: Generate the Report
+A PM should understand each bullet on one read, without opening GitHub.
+
+### Step 5: Generate the Report
+
+## Output Format
 
 ```
 ## Project Status — {window description} (as of YYYY-MM-DD)
@@ -153,20 +134,38 @@ Backlog untouched this window: J open issues
 - [Add user dashboard with metrics](https://github.com/owner/repo/issues/9) depends on [Stabilize metrics API](https://github.com/owner/repo-c/issues/2) — merged, so now unblocked
 
 ### Notes
-- Any repos with zero activity this window
-- Any items whose Priority/Effort/dates are missing (per AGENTS.md, shouldn't happen for
-  issues created via this workflow — flag if found)
+- Repos with zero activity this window
+- Items missing Priority/Effort/dates (every issue should carry all four — flag if found)
 ```
 
-## Tips
+## Red Flags — STOP
 
-- Always fetch live from GitHub — the state file only stores a timestamp, never issue/PR data.
-- In the Current Project **tables**, the `#` column can stay a bare number since the row already
-  carries the title in its own column. In the **Dependency Map**, always lead with the linked
-  title (see Step 4) — a PM shouldn't have to map a number back to a name to follow a bullet.
-- When you do need to disambiguate across repos, put the `owner/repo` context in the link URL
-  (which you're building anyway) rather than in the visible text; keep the visible text the title.
-- If Priority/Effort/Start/Target date fields are missing on an issue, note it under "Notes"
-  rather than silently omitting it — it signals a gap in the AGENTS.md enforcement flow.
-- This skill reports; it doesn't write anything to GitHub (no comments, no field updates). If
-  the user wants updates made based on the report, treat that as a separate follow-up request.
+- About to offer "Since last check" without having read the state file
+- Filling in a `last_checked` value you didn't read from the file
+- Reading the window from `workday.json` — that's the workday skills' file, and its boundaries mean something else
+- A Dependency Map bullet whose primary identifier is a number
+- About to add a comment, set a field, or close something — this skill reads only
+- Finishing the run without overwriting the state file
+
+## Quick Reference
+
+| Situation | Action |
+|-----------|--------|
+| Very start of every run | Read `.claude/state/project-status.json` before offering window options |
+| State file missing or malformed | Say there's no prior check; don't offer "Since last check" |
+| Relative window ("since Monday") | Convert to absolute `YYYY-MM-DD` before querying |
+| Current-project scope | `list_*` / `search_*` with `repo:{owner}/{repo}` |
+| Org scope | `search_*` with `org:{owner}` |
+| Identifying an item in a table | Bare `#N` is fine — the row carries the title |
+| Identifying an item in the Dependency Map | Linked title, always |
+| Missing Priority/Effort/dates | Flag under Notes, don't silently omit |
+| End of every run | Overwrite `.claude/state/project-status.json` with the current timestamp |
+
+## Common Rationalizations
+
+| Excuse | Reality |
+|--------|---------|
+| "I'll offer the window options first, then read the state file" | The file's contents determine which options are valid. Reading it after means offering a window that may not exist. |
+| "There's no state file, I'll estimate when the last check was" | Never fabricate a timestamp. Say there's no prior check on record. |
+| "The report found a stale issue, I'll just fix it while I'm here" | This skill reports only. Surface it and let the user ask for the change. |
+| "The window was 'since last check', so no need to update the file" | Every run updates it, whichever window was used. |
