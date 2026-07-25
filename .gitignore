@@ -1,1 +1,10 @@
-.claude/state/
+# Nothing to ignore, by design.
+#
+# The tracking skills keep all local state outside every git repo on the machine:
+#   ~/.claude/.tracking/<org>/     the tracking clone
+#   ~/.claude/<org>.status.json    session cursor
+#   ~/.claude/<org>.snapshot.json  report cursor
+#
+# Product repos get nothing, so none of it shows up in `git status` here.
+# If you find yourself adding a state directory under .claude/, read
+# docs/target-workflow.md §2 first — it's deliberately not where state lives.

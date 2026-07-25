@@ -21,7 +21,11 @@ This repo's agent workflows use the `plugin:github:github` MCP server exclusivel
 - The user pastes a `gh` command and asks you to run it
 - Writing a script or instructions that assume the `gh` CLI is available
 
-The start-workday, end-workday, and project-status skills all route their GitHub access through here.
+The start-work, end-work, and `/snapshot` skills all route their GitHub access through here, as does
+the shared reference they read, `.claude/.tracking/format.md`.
+
+**Plain `git` is not `gh`.** These skills run `git` directly against product repos and the tracking
+clone. That's expected and needs no translation — this skill is about the `gh` binary only.
 
 ## Issues
 
@@ -128,6 +132,32 @@ The start-workday, end-workday, and project-status skills all route their GitHub
 | Remove a sub-issue link | `sub_issue_write(method: "remove", ...)` |
 | Read an issue's hierarchy | `issue_read(..., method: "get_sub_issues")` / `method: "get_parent"` |
 
+### What this org actually defines
+
+Verified against `list_issue_fields(owner: "msa1624")` — **four** custom fields, and these are the
+valid values:
+
+| Field | Type | Valid values |
+|---|---|---|
+| Priority | single-select | `Urgent` · `High` · `Medium` · `Low` |
+| Effort | single-select | `High` · `Medium` · `Low` |
+| Start date | date | `YYYY-MM-DD` |
+| Target date | date | `YYYY-MM-DD` |
+
+Issue types are `Task` · `Bug` · `Feature` — **there is no `Epic` type.** A track's parent issue is
+a `Feature` unless the developer says otherwise; it's a track because `tracks.yml` points at it, not
+because of its type.
+
+Still re-run `list_issue_fields` / `list_issue_types` at call time rather than trusting this table —
+an org admin can change either without touching this file.
+
+### Two things that aren't available here
+
+| Asked for | Reality |
+|---|---|
+| `Size` or `Estimate` | Not defined as Issue Fields in this org. Don't create them, don't fake them, and don't map Effort onto them. Say they don't exist. |
+| Relationships (blocks / blocked-by) | A GitHub feature with **no write tool** in `plugin:github:github`. Read what `issue_read` surfaces, plus `#N` references and blocks/depends-on prose. To *record* a dependency, use the timeline's `blocked_by` (see `.claude/.tracking/format.md`). Sub-issue hierarchy is separate and does have `sub_issue_write`. |
+
 **Every `issue_write` with `method: "create"` must include all four Issue Fields** — Priority, Effort, Start date, Target date — with validated option names and dates. Self-check before calling. Ask the user rather than guessing when a value isn't obvious from the conversation.
 
 ## Red Flags — STOP
@@ -135,6 +165,9 @@ The start-workday, end-workday, and project-status skills all route their GitHub
 - About to run `gh` in a Bash call in this repo
 - Creating an issue without all four Issue Fields
 - Guessing a Priority or Effort value the conversation never established
+- Passing a Priority or Effort option name that isn't in this org's list
+- Setting a `Size` or `Estimate` field this org doesn't define
+- Claiming a Relationship was written when no tool here can write one
 - Putting `sort:` inside a `search_*` query string
 - Inventing a tool name because no row in these tables matched
 - Translating a merge, delete, or send and treating the translation as approval
@@ -161,6 +194,9 @@ The start-workday, end-workday, and project-status skills all route their GitHub
 | "The user pasted the `gh` command, so they want it run" | They want the outcome. Translate it. |
 | "I'll fill in Priority/Effort with something reasonable" | Guessed field values look identical to real ones downstream. Ask. |
 | "This one field can be filled in later" | All four are required at create time. Later doesn't happen. |
+| "The design calls for Size and Estimate, so I'll add them" | This org defines neither. Inventing fields puts fabricated data where a reader expects a record — say they don't exist. |
+| "I'll set the blocked-by Relationship on the issue" | No write tool exists for it here. Record the dependency as a `blocked_by` timeline event and say the issue wasn't updated. |
+| "A track's parent should have type Epic" | This org has Task, Bug, and Feature. `tracks.yml` is what makes an issue a track's parent. |
 | "No table row matches, but this tool name looks right" | Improvised calls fail or do the wrong thing. `gh workflow`, `gh secret`, `gh gist`, `gh alias`, `gh extension` have no equivalent here — say so. |
 | "`sort:` in the query works in the GitHub UI" | The `search_*` tools take dedicated `sort`/`order` params. Query strings hold criteria only. |
 | "I translated the merge command, so it's approved" | Translation isn't consent. Confirm irreversible actions first. |
