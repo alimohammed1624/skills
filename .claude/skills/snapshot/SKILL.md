@@ -7,8 +7,8 @@ description: Use when the user explicitly runs /snapshot or asks for a snapshot 
 
 ## Overview
 
-A three-layer, org-scoped, per-developer report: **current repo detail**, an **org-wide rollup**,
-and **who did what**. Each layer joins live GitHub state against timeline history — computed at
+A three-layer, org-scoped, per-developer report: **detail on the repos in scope**, an **org-wide
+rollup**, and **who did what**. Each layer joins live GitHub state against timeline history — computed at
 report time and cached nowhere.
 
 **Announce at start:** "I'm using the snapshot skill to build your report."
@@ -45,7 +45,7 @@ scoped to open work rather than to a window.
 
 | Never | Only |
 |---|---|
-| No timeline events | Its own `~/.claude/<org>.snapshot.json` cursor |
+| No timeline events | Its own `<base>/.claude/<org>.snapshot.json` cursor |
 | No commits or pushes to the tracking repo | |
 | No issue comments, field writes, closures, or labels | |
 
@@ -82,38 +82,84 @@ When a case isn't covered, decide by these.
 
 ### Paths
 
-Derive org and repo once per run — `git config --get remote.origin.url`. Every path follows
-deterministically. **Nothing records these paths and nothing caches them.**
+Resolve two things once per run, before touching anything. Every path below follows
+deterministically from them. **Nothing records these paths and nothing caches them.**
+
+**1. The base** — the working directory the skill was invoked in, as an **absolute** path (`pwd`).
+Resolve it once and reuse that absolute form everywhere.
+
+**2. The layout and the repo set.** The base is one of two shapes, and one command tells you which:
+
+```bash
+git -C <base> rev-parse --show-toplevel 2>/dev/null
+```
+
+| Result | Layout | Repo set | Current repo |
+|---|---|---|---|
+| A path | **R** — the base is, or sits inside, an org repo | that one repo | it |
+| Nothing | **P** — the base is a parent of org repo clones | every depth-1 child holding a `.git`, mapped to `owner/repo` from its remote | **none** |
+
+**Layout R is the one-element case of layout P, not a separate mode.** Scan one level down, never
+recursively. **In layout P every child belongs to the org**; a child whose
+owner differs is a violated premise to name, not a case to resolve silently.
+
+This is what Layer 1 is scoped to — see *The Three Layers*.
+
+**3. The org** — in this order, stopping at the first that answers:
+
+| Source | How |
+|---|---|
+| The current repo's remote *(layout R)* | `git config --get remote.origin.url`, parsed for the owner |
+| The repo set's remotes *(layout P)* | the owner they agree on. **They disagree → ask; never pick a majority** |
+| A recorded answer | `<base>/.claude/tracking-org`, one line, the org login |
+| The developer | Ask once, then **write it to `<base>/.claude/tracking-org`** so no later run asks again |
+
+**A base with no git remote is normal, not an error.** In layout P the base never has one — the org
+comes from its children. Falling back to the recorded answer is the designed path, not a degraded one.
 
 | What | Path |
 |---|---|
-| Tracking clone | `~/.claude/.tracking/<org>/` |
-| Snapshot cursor | `~/.claude/<org>.snapshot.json` |
+| Tracking clone | `<base>/.claude/.tracking/<org>/` |
+| Snapshot cursor | `<base>/.claude/<org>.snapshot.json` |
+| Org record | `<base>/.claude/tracking-org` |
 
-`~/.claude/<org>.status.json` belongs to start-work and end-work. **Never open it** — its boundaries
+`<base>/.claude/<org>.status.json` belongs to start-work and end-work. **Never open it** — its boundaries
 mean something else, and this skill's window never comes from there.
+
+**The record is per working directory, not per machine.** A snapshot run from a base whose clone is
+missing sees an empty timeline — which reads exactly like "nothing happened." It is not the same
+thing. If the clone had to be created this run, say so rather than reporting a quiet org.
+
+Writing `tracking-org` is the **one** exception to the write-surface table below: it is local
+configuration, not record content, and without it a base with no remote can never run this skill.
 
 ### Write surfaces — one, and nowhere else
 
 | Location | Writes permitted |
 |---|---|
-| `~/.claude/<org>.snapshot.json` | The `last_checked` timestamp. Nothing else, anywhere. |
+| `<base>/.claude/<org>.snapshot.json` | The `last_checked` timestamp. Nothing else, anywhere. |
 
 No events, no commits, no issue comments, no field writes, no labels, no closures.
 
 ### Bootstrap *(snapshot variant — clones, never creates)*
 
-**B1.** `git -C ~/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null`. Present → pull. Missing →
+**B0.** Resolve the base (`pwd`, absolute), then the layout and repo set, then the org — the current
+repo's or the children's remotes, then `<base>/.claude/tracking-org`, then ask once and record it.
+Then, **in layout R only**, ensure the exclusion lines are in that repo's `.git/info/exclude`; in
+layout P `<base>/.claude/` sits in no repo, so there is nothing to exclude and nothing to write into
+the children. No path below is computable until the base and org answer.
+
+**B1.** `git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null`. Present → pull. Missing →
 `search_repositories(query: "repo:{org}/tracking")`.
 
 **B2.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
-~/.claude/.tracking/{org}`, and say where.
+<base>/.claude/.tracking/{org}`, and say where.
 
 **Remote does not exist → do NOT offer to create it.** Cloning is sync; creating is authorship, and
 this skill does the first only. Report that `{org}` has no tracking repo, name start-work as the way
 to create one, and run degraded — see Step 1.
 
-**B3.** `git -C ~/.claude/.tracking/<org> pull --rebase`, every run. There is no stored sync
+**B3.** `git -C <base>/.claude/.tracking/<org> pull --rebase`, every run. There is no stored sync
 timestamp and nothing is conditional on one. **No write-access check** — this skill only reads.
 
 ### `<org>.snapshot.json`
@@ -206,7 +252,7 @@ person attributes to that person. Exclude bots (`dependabot`, `renovate`, `githu
 **Read the cursor before presenting any options.** Its contents change what you may offer, so this
 cannot happen after the user has already picked.
 
-`~/.claude/<org>.snapshot.json`:
+`<base>/.claude/<org>.snapshot.json`:
 
 ```json
 { "schema": 1, "org": "msa1624", "last_checked": "2026-07-25T05:26:35Z" }
@@ -314,13 +360,14 @@ activity — it goes in not_covered.
 
 #### Brief 1 — repo detail and org rollup *(Steps 2–3)*
 
-> **INPUT you supply:** `current_repo`, window, `fields[]`, and `tracks[]` + `track_threads{}` read
-> from `tracks.yml` and the timeline.
+> **INPUT you supply:** `repos_in_scope[]` (the repo set — one entry in layout R, N in layout P),
+> window, `fields[]`, and `tracks[]` + `track_threads{}` read from `tracks.yml` and the timeline.
 >
 > Follow each track's `parent` and read its title, owner, and dates **live** — that is what keeps
 > "pointer, not content" true across the boundary. Never echo back a stored copy of live state.
 >
-> **`data`:** `repo_detail{repo, counts{shipped, in_progress, backlog_untouched}, rows[]}` where each
+> **`data`:** `repo_detail[]` — one entry **per repo in scope**,
+> `{repo, counts{shipped, in_progress, backlog_untouched}, rows[]}`, where each
 > row is `{ref, kind, title, who, status, fields[], url}`; `org_rollup[]` —
 > `{repo, shipped, in_progress, contributors[], activity}`; `track_rollup[]` —
 > `{track, parent, parent_title, parent_owner, parent_fields[], threads{total,done,active,blocked},
@@ -412,11 +459,20 @@ brief's `covered` / `not_covered`, and print `phrase` verbatim for any join that
 **If a brief fails**, retry once narrowed, then run that layer's inline procedure below yourself and
 say which layer ran degraded. Steps 2–5 remain both the specification and the fallback.
 
-### Step 2: Current Project Detail
+### Step 2: Detail on the Repos in Scope
 
 *(Delegated to Brief 1. This section is what it returns, and your fallback if it doesn't.)*
 
-Scoped to this repo, for the window:
+**"In scope" is the repo set** — the current repo in layout R, every child clone in layout P. Layer 1
+is the close-up layer, and what it is close to is where the developer opened Claude: one repo when
+they're standing in one, their whole workspace when they're standing above it.
+
+**In layout P, render one detail section per repo, never a merged one.** Merging them produces a
+layer indistinguishable from the org rollup below it, and the two layers stop earning their
+separation. **Name the repo set in the report** — "3 repos in scope: api, web, platform" — so a
+missing clone reads as missing rather than as a repo with nothing happening.
+
+Scoped to each repo in the set, for the window:
 
 ```
 list_issues(owner, repo, state: "all")            → filter updated_at against the window
@@ -584,9 +640,9 @@ schema. Build the columns from what `list_issue_fields` returned this run.
 
 ```
 ## Snapshot — {window description} (as of 2026-07-25)
-Org: msa1624 | Repo: msa1624/api | Timeline: 3 developers, 2 tracks
+Org: msa1624 | In scope: 2 repos (api, web) — workspace ~/work | Timeline: 3 developers, 2 tracks
 
-### Current Project: msa1624/api
+### msa1624/api
 Shipped: 2 merged PRs, 1 closed issue | In progress: 3 | Backlog untouched: 11
 
 | # | Type | Title | Who | Status | Priority | Effort |
@@ -594,6 +650,13 @@ Shipped: 2 merged PRs, 1 closed issue | In progress: 3 | Backlog untouched: 11
 | 47 | PR | Refund endpoint | @nilendu | merged | High | Medium |
 | 43 | Issue | Refund flow | @nilendu | in progress | High | Medium |
 | 51 | Issue | Flaky nightly build | — | in progress | Low | Low |
+
+### msa1624/web
+Shipped: 0 | In progress: 1 | Backlog untouched: 4
+
+| # | Type | Title | Who | Status | Priority | Effort |
+|---|------|-------|-----|--------|----------|--------|
+| 22 | Issue | Payment UI | @priya | in progress | Medium | Medium |
 
 ### Org Rollup
 | Repo | Shipped | In Progress | Contributors | Activity |
@@ -676,6 +739,13 @@ planned-vs-recorded comparison.)*
 - Ranking developers, scoring output, or characterizing anyone's week
 - Guessing a real name or pronouns from a GitHub handle
 - Calling a repo with no timeline events "inactive"
+- Reporting a quiet org when the truth is that **this base had no clone** and one was created this
+  run — a freshly cloned timeline and a genuinely idle org read identically, and only one is news
+- Guessing the org from the directory name because the base has no remote
+- Picking a majority owner when the repo set's remotes disagree, instead of asking
+- Merging a workspace's repos into one Layer 1 section, which makes it a second org rollup
+- Reporting Layer 1 without naming the repos in scope — a repo nobody cloned then reads as a repo
+  with nothing happening
 - Adding anything to a Projects v2 board — this skill reports membership, never writes it
 - Treating an issue's Issue Field values as evidence it is on a board; they are separate
   mechanisms and an issue can have every field and no board
@@ -693,7 +763,11 @@ rest mean: you are about to put something in a report that the sources do not su
 | Very start of every run | Read `<org>.snapshot.json` before offering window options |
 | Cursor missing or malformed | Say there's no prior check; don't offer "since last check" |
 | Relative window | Convert to absolute `YYYY-MM-DD` first |
-| Current-repo scope | `list_*` / `search_*` with `repo:{owner}/{repo}` |
+| Which layout | `git -C <base> rev-parse --show-toplevel` — a path is R, nothing is P |
+| Layer 1 scope | The repo set: the current repo (R), or every child clone (P). One section per repo |
+| Layer 1 query | `list_*` / `search_*` with `repo:{owner}/{repo}`, per repo in scope |
+| Base has no git remote | Layout P's normal state — org from the children, else `tracking-org`, else ask once and record |
+| Repo set's remotes disagree on the owner | Violated premise. Name it and ask; never take the majority |
 | Org scope | `search_*` with `org:{org}` — `list_*` can't span an org |
 | Track scope | `tracks.yml` + timeline, following `parent` for live title/owner/dates |
 | Release-shaped report | Group by Milestone, which cuts across tracks |
@@ -733,6 +807,8 @@ rest mean: you are about to put something in a report that the sources do not su
 | "No cursor file, I'll estimate when the last check was" | Never fabricate a timestamp. Say there's no prior check on record. |
 | "The report found a stale issue, I'll just fix it while I'm here" | This skill reports. Surface it and let the user ask for the change. |
 | "The timeline has the target date on it too, I'll read it from there" | It doesn't, by design — that would be a cached copy of live state. Planned comes from the issue, always. |
+| "The base isn't a repo, so there's no Layer 1 to run" | It's a workspace of N repos, and all N are in scope. Layer 1 is close-up on where they opened Claude, whatever shape that is. |
+| "Five repos in scope is a lot of sections — I'll merge them" | Merged, Layer 1 becomes the org rollup with different column headers, and the close-up layer is gone. One section each. |
 | "There's no Estimate field, so I'll compare Effort to Effort" | Compare Effort to what the timeline shows the work took. That's the calibration signal available here. |
 | "The window was 'since last check', so no need to update the cursor" | Every run updates it, whichever window was used. |
 | "This PR touches auth, and @ali owns auth — I'll credit them" | Attribution comes from the record, not from who usually works where. Unassigned is `—`. |

@@ -13,8 +13,8 @@ and it may be one continuous sitting or a series of bursts.
 
 **Announce at start:** "I'm using the start-work skill to open your session."
 
-**READ *The Substrate* BELOW FIRST**, before touching anything under `~/.claude/`. It holds the
-paths, bootstrap procedure, cursor schema, and event format this skill depends on.
+**READ *The Substrate* BELOW FIRST**, before touching anything under `<base>/.claude/`. It holds the
+base resolution, paths, bootstrap procedure, cursor schema, and event format this skill depends on.
 
 **REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. It routes GitHub access down
 a three-rung ladder — MCP tool, then `gh` flag, then `gh api graphql` — and nothing is reported
@@ -72,43 +72,151 @@ When a case isn't covered, decide by these.
 
 ### Paths
 
-Derive the org once per run — `git config --get remote.origin.url` — and parse the owner. Every path
-follows deterministically. **Nothing records these paths and nothing caches them.**
+Resolve three things once per run, before touching anything. Every path below follows
+deterministically from them. **Nothing records these paths and nothing caches them.**
+
+**1. The base** — the working directory the skill was invoked in, as an **absolute** path (`pwd`).
+Resolve it once and reuse that absolute form everywhere. A bare relative path is not good enough:
+this skill `cd`s into product worktrees to cut branches, and a relative base silently retargets the
+moment it does.
+
+**2. The layout and the repo set.** The base is one of two shapes, and one command tells you which:
+
+```bash
+git -C <base> rev-parse --show-toplevel 2>/dev/null
+```
+
+| Result | Layout | Repo set | Current repo |
+|---|---|---|---|
+| A path | **R** — the base is, or sits inside, an org repo | that one repo | it |
+| Nothing | **P** — the base is a parent of org repo clones | every depth-1 child holding a `.git`, mapped to `owner/repo` from its remote | **none** |
+
+**Layout R is the one-element case of layout P, not a separate mode.** Everything downstream reads
+the **repo set** and, where it exists, the **current repo** — never "the repo you're standing in."
+That phrase has no referent in P, which is why it is gone from this skill.
+
+```bash
+# layout P: build the repo set — one level down, no deeper
+for d in <base>/*/; do
+  git -C "$d" config --get remote.origin.url 2>/dev/null   # → owner/repo, plus the path
+done
+```
+
+**Scan one level, never recursively.** A workspace's repos are its children; walking deeper turns a
+`node_modules` or a vendored checkout into a candidate product repo.
+
+**In layout P every child repo belongs to the org.** That is the assumed shape, so a child whose
+owner differs from the rest is a violated premise, not a case to resolve silently — name it and ask
+once.
+
+**3. The org** — in this order, stopping at the first that answers:
+
+| Source | How |
+|---|---|
+| The current repo's remote *(layout R)* | `git config --get remote.origin.url`, parsed for the owner |
+| The repo set's remotes *(layout P)* | the owner they agree on. **They disagree → ask; never pick a majority** |
+| A recorded answer | `<base>/.claude/tracking-org`, one line, the org login |
+| The developer | Ask once, then **write it to `<base>/.claude/tracking-org`** so no later run asks again |
+
+**A base with no git remote is normal, not an error.** In layout P the base itself never has one —
+the org comes from its children. A base that is neither, with no children cloned yet, falls back to
+the recorded answer, and that is the designed path rather than a degraded one.
 
 | What | Path |
 |---|---|
-| Tracking clone | `~/.claude/.tracking/<org>/` |
-| Session cursor | `~/.claude/<org>.status.json` |
+| Tracking clone | `<base>/.claude/.tracking/<org>/` |
+| Session cursor | `<base>/.claude/<org>.status.json` |
+| Org record | `<base>/.claude/tracking-org` |
 
 The cursor lives **outside** the clone deliberately: a file that must survive a reclone, a
 `git clean`, or a bad rebase inside that clone cannot live where the clone's own git operations reach
-it. `~/.claude/<org>.snapshot.json` exists and belongs to `/snapshot` — **never open it.**
+it. `<base>/.claude/<org>.snapshot.json` exists and belongs to `/snapshot` — **never open it.**
 
-**Product repos get nothing.** No cursor, no clone, no tracking directory, no `.gitignore` entry.
+**The record is per working directory, not per machine.** Two directories on one machine each keep
+their own clone and cursor, even for the same org — they share a remote, not a local state. The
+consequence is worth stating because it will bite someone: **a session opened in one directory is
+invisible from another.** Open and close a session from the same base. A session that looks missing
+is usually a session opened somewhere else, not an abandoned one.
+
+**The layouts are the common way to trip on this**, because they are two places one developer can
+legitimately start from: the repo, or its parent. So in **layout R, before treating an absent
+session as absent, check the parent** — one `ls`, no adoption:
+
+```bash
+ls <base>/../.claude/*.status.json 2>/dev/null
+```
+
+Found → say the parent holds a cursor and name the directory, so the developer can re-run there.
+**Never read it, never adopt it, never write to it.** It belongs to that base, and a session opened
+from the parent is closed from the parent.
+
+### When the base is inside a git repo *(layout R)*
+
+The record is **out-of-band** (principle 5) — it must never be committed into the work it describes.
+So when `<base>` sits inside a git repo, exclude it, **using `.git/info/exclude`, not `.gitignore`**:
+
+```bash
+git -C <base> rev-parse --show-toplevel        # is there a repo, and where is its root?
+# if there is, ensure these lines exist in <toplevel>/.git/info/exclude:
+.claude/.tracking/
+.claude/*.status.json
+.claude/*.snapshot.json
+.claude/tracking-org
+```
+
+**`.git/info/exclude` rather than `.gitignore` is the whole point.** `.gitignore` is a tracked file;
+writing it would modify the product repo's contents, show up in the developer's diff, and land in
+someone's commit. `.git/info/exclude` is local-only and untracked, so the exclusion costs the repo
+nothing and the write surfaces below stay intact.
+
+Check this every run and add any missing line, saying that you did. Note what is **not** excluded:
+`.claude/skills/` and other project Claude config are ordinary tracked files and none of this
+applies to them.
+
+**In layout P there is nothing to exclude and nothing to check.** `<base>/.claude/` sits in no repo,
+so the record is already out-of-band. **Never write exclusion lines into the child repos** — they
+don't hold the record, and `.git/info/exclude` is not a file to touch on spec.
 
 ### Write surfaces — these three, and nowhere else
 
 | Location | Writes permitted |
 |---|---|
-| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The yes was given at the confirmation block, not at the push. |
-| `~/.claude/<org>.status.json` | Local cursor writes. No git involved. |
-| Product repos | **Branch creation and checkout only.** No file contents modified, nothing committed, nothing pushed. |
+| `<base>/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The yes was given at the confirmation block, not at the push. |
+| `<base>/.claude/<org>.status.json` | Local cursor writes. No git involved. |
+| Product repos | **Branch creation and checkout only.** No file contents modified, nothing committed, nothing pushed. `.git/info/exclude` is the one exception, and it is untracked by design — see above. |
+
+**`<base>` being inside a product repo does not widen this.** The tracking clone is still the only
+thing committed, and it is committed to `{org}/tracking` — never to the repo it happens to sit in.
 
 Issues get created with their fields — that is this skill's documented job. Issue **bodies** are
 never rewritten and PRs are never written.
 
 ### Bootstrap — every run
 
+**B0. Resolve the base, the layout, the repo set, the org, and the exclusion.** All of it before any
+path is used, in this order — the clone path is not computable until the org answers, and the org's
+first two sources are the layout's.
+
+```bash
+pwd                                            # the base, absolute
+git -C <base> rev-parse --show-toplevel        # layout R or P — and, in R, where to check the exclusion
+git -C <base>/*/ config --get remote.origin.url  # layout P: the repo set, one level down
+cat <base>/.claude/tracking-org                # org, recorded fallback
+```
+
+If no org source answers, **ask once and record the answer** — do not guess an org from a directory
+name. A directory called `acme-web` implies nothing about which GitHub org owns it.
+
 **B1. Is the clone present?**
 
 ```bash
-git -C ~/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
+git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
 ```
 
 Present → pull (B3). Missing → `search_repositories(query: "repo:{org}/tracking")`.
 
 **B2. Bootstrap.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
-~/.claude/.tracking/{org}`, and say you did it and where.
+<base>/.claude/.tracking/{org}`, and say you did it and where.
 
 **Remote does not exist → offer to create it, and wait for a clear yes.** Creating a repo is
 outward-facing and never happens implicitly.
@@ -144,7 +252,7 @@ there are no durations, no rankings, and no pruning.
 **B3. Pull, every run.**
 
 ```bash
-git -C ~/.claude/.tracking/<org> pull --rebase
+git -C <base>/.claude/.tracking/<org> pull --rebase
 ```
 
 A clone left dirty by a previous run gets its own report line — never merged into the developer's
@@ -340,7 +448,7 @@ a stated bound.
 
 ```bash
 grep -h '"event":"handoff"' \
-  ~/.claude/.tracking/<org>/timeline/{<this-month>,<last-month>}/*.jsonl
+  <base>/.claude/.tracking/<org>/timeline/{<this-month>,<last-month>}/*.jsonl
 ```
 
 Filter to `to == <this dev>`, then drop any whose `thread` has a later `done` event or reads closed
@@ -380,7 +488,7 @@ flowchart TD
     STALE --> NEW
     NEW --> BR
     RES --> BR
-    BR["git rev-parse --abbrev-ref HEAD;<br/>grep timeline for this branch"] --> W1["WAVE 1 — parallel, read-only:<br/>session brief + dependencies"]
+    BR["Layout R: read HEAD, grep timeline for that branch<br/>Layout P: no branch hint"] --> W1["WAVE 1 — parallel, read-only:<br/>session brief + dependencies"]
 
     W1 --> GATE1["Return gate on both payloads"]
     GATE1 --> INTENT{Intent — from what they said,<br/>then the branch,<br/>then ask once}
@@ -403,8 +511,9 @@ flowchart TD
 
 ### Step 1: Preflight
 
-Derive the org, bootstrap the clone if missing, `git pull --rebase`. See
-**_The Substrate_ → Bootstrap**. No write-access check here — start-work only
+Resolve the layout and repo set, derive the org, bootstrap the clone if missing, `git pull --rebase`.
+See **_The Substrate_ → Paths** and **→ Bootstrap**. Say which layout you're in and how many repos
+are in scope — it explains the presence or absence of the branch hint before anyone wonders. No write-access check here — start-work only
 reads the tracking repo until its final step, and a developer without push rights still gets a full
 briefing.
 
@@ -412,7 +521,7 @@ Get the developer's handle with `get_me()`.
 
 ### Step 2: Resolve the Session
 
-Read `~/.claude/<org>.status.json`.
+Read `<base>/.claude/<org>.status.json`.
 
 | `session` field | Age of `session.started_at` | What you do |
 |---|---|---|
@@ -439,11 +548,11 @@ in the briefing. Never set `inferred` on an event that was actually recorded.
 `session_resume` and continue with the same id, so a later burst lands inside the existing session
 instead of forking a second one covering the same work.
 
-### Step 3: Read the Branch as a Hint
+### Step 3: Read the Branch as a Hint *(layout R only)*
 
 ```bash
-git rev-parse --abbrev-ref HEAD
-git status --short
+git -C <current repo> rev-parse --abbrev-ref HEAD
+git -C <current repo> status --short
 ```
 
 Branches created by this skill are named `<type>/<repo>-<issue#>-<slug>`, so the thread is
@@ -456,6 +565,12 @@ recoverable from the name alone. Confirm it against the timeline:
 
 **The branch lookup is a hint, not a decision.** It pre-selects a default; the developer can always
 choose otherwise. Standing on `main` with a clean tree simply means no pre-fill.
+
+**In layout P this step does not run.** There is no current repo, so there is no branch to read and
+no pre-fill to make — say so in one line ("no branch hint; the base is a workspace of 3 repos") and
+resolve intent from what the developer said. **Never run `rev-parse` from a layout-P base and never
+substitute a child repo's branch for it**: N children have N branches, none of them "the" one, and a
+hint picked from an arbitrary child is a confident pre-fill with nothing behind it.
 
 ### Step 4: Research — Wave 1 (before you ask anything)
 
@@ -623,6 +738,30 @@ someone else's work.
 **When `tracks.yml` is empty, "task in an existing track" is not offered.** The flow degrades to
 "brand new track" with no special case.
 
+#### Which repo hosts the thread
+
+The issue is created in a repo and the branch is cut in a worktree, so both need a repo **and its
+local path**, each with a source like every other line in the block:
+
+| Case | The block shows | Source |
+|---|---|---|
+| Layout R | the current repo | `← you're standing in ~/work/api` |
+| Layout P, one plausible host | that repo set entry | `← <base>/api, remote msa1624/api` |
+| Layout P, several plausible | `— ask`, listing the repo set | — |
+| The track's other threads sit in one repo, and it's in the set | that repo | `← 2 open threads in payments-v2, both in msa1624/api` |
+| The repo isn't in the set at all | `— ask` — **offer to clone it into `<base>/<name>`** | — |
+
+**Cloning a missing repo is a read, so it is allowed — but it is not silent.** It appears as its own
+line in the block and happens only on the yes, like every other write in this skill.
+
+**Never cut a branch in a repo that is not in the repo set.** The path would come from somewhere
+other than this run's resolution, and `session.threads[].worktree` — which end-work iterates to
+enforce its iron law — would point at a directory this skill never verified exists.
+
+**`worktree` is the repo set entry's absolute path** (in layout R, the current repo's root). Never
+`~`-relative, never `<base>` plus a guessed directory name: a repo's local directory need not match
+its GitHub name, so read the path from the set rather than composing it.
+
 **Wave 2 — dispatch the field brief now**, once the work has a name. It cannot merge into Wave 1: it
 depends on what the developer just decided, and running it speculatively would propose values for an
 issue that may never exist.
@@ -703,7 +842,7 @@ Nothing is written yet. Everything below has a source.
 
   Track      payments-v2                  ← "refund" matches parent #38 "Payments v2";
                                             2 open threads in it, both in msa1624/api
-  Repo       msa1624/api                  ← you're standing in ~/work/api
+  Repo       msa1624/api                  ← ~/work/api (repo set, layout P: 3 clones)
   Parent     msa1624/api#38               ← tracks.yml: payments-v2 → parent api#38
 
 Creating msa1624/api#52 — refund idempotency
@@ -788,11 +927,15 @@ design (target-workflow §1).
 
 For a brand new track, `exit_criteria` is required — a track without it never closes.
 
-Then create the branch, in the product repo, named `<type>/<repo>-<issue#>-<slug>`:
+Then create the branch, in the product repo the block named, at the path the repo set gave it, named
+`<type>/<repo>-<issue#>-<slug>`:
 
 ```bash
-git -C <worktree> checkout -b feat/api-41-checkout
+git -C <worktree> checkout -b feat/api-41-checkout   # <worktree> from the repo set — never <base>
 ```
+
+**`git checkout -b` with no `-C` is wrong in both layouts** — in P it runs in a directory that is not
+a repo, and in R it depends on nothing having `cd`'d since. Always name the worktree.
 
 and append `branch_created`, carrying the issue's `title` as of now.
 
@@ -830,7 +973,7 @@ Then, in order:
 
 1. Create the issue and branch if that's what was accepted, with `Field provenance` in the body,
    then add it to the board if the `Project` line was accepted — creating the issue does not.
-2. Write `session.threads[]` into `~/.claude/<org>.status.json`. Shape and rules:
+2. Write `session.threads[]` into `<base>/.claude/<org>.status.json`. Shape and rules:
    **_The Substrate_ → `<org>.status.json`**.
 3. Append `session_start` (carrying `mode` and `threads`) or `session_resume` (carrying `mode`,
    `threads`, and `threads_added` when it picked up a thread) to `timeline/YYYY-MM/<dev>.jsonl`.
@@ -940,6 +1083,17 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
 - Committing or modifying a file in a product repo — branches only
 - Rewriting an issue body, or writing to a PR
 - Storing a `~`-relative `worktree` path that a later `cd` can't resolve
+- Using a **relative** base after any step has `cd`'d into a product worktree
+- Guessing the org from the directory name because the base has no remote
+- Running `rev-parse --abbrev-ref HEAD` from a layout-P base, or offering a child repo's branch as
+  the hint — N children have N branches and none of them is "the" one
+- Composing a worktree path as `<base>/<repo name>` instead of reading it off the repo set
+- Cutting a branch in a repo that is not in the repo set
+- Scanning deeper than one level for the repo set, so a vendored checkout becomes a candidate
+- Picking a majority owner when the repo set's remotes disagree, instead of asking
+- Writing exclusion lines into child repos in layout P — they don't hold the record
+- Writing the tracking paths into a product repo's `.gitignore` instead of `.git/info/exclude`
+- Committing `.claude/.tracking/` into the repo it happens to sit in — that is principle 5 inverted
 - Pushing the tracking repo without showing the diff
 - Waiting for a second yes at the push, after the block was already accepted
 
@@ -950,7 +1104,16 @@ something false into the record, or into a repo that isn't yours to write.**
 
 | Situation | Action |
 |---|---|
-| Start of every run | Bootstrap check → `git pull --rebase` → `get_me()` |
+| Start of every run | Resolve base + layout + repo set + org (B0) → bootstrap check → `git pull --rebase` → `get_me()` |
+| Which layout | `git -C <base> rev-parse --show-toplevel` — a path is R, nothing is P |
+| Base is a parent of clones (P) | Repo set = depth-1 children with a `.git`. No current repo, no branch hint |
+| Base is inside a git repo (R) | Repo set = that repo. Ensure the exclusion lines are in `.git/info/exclude` — never `.gitignore` |
+| Base has no git remote | Layout P's normal state — org comes from the children, else `<base>/.claude/tracking-org`, else ask once and write it |
+| Repo set's remotes disagree on the owner | Violated premise. Name it and ask; never take the majority |
+| Which repo hosts a new thread | See **Which repo hosts the thread** — current repo in R, repo set entry in P, `— ask` when several |
+| The thread's repo isn't cloned locally | `— ask`, with an offer to clone it into `<base>/<name>`. Cloning is a read; it still waits for the yes |
+| `worktree` for `session.threads[]` | The repo set entry's absolute path — never `<base>` plus a guessed name |
+| Layout R, no session in the cursor | `ls <base>/../.claude/*.status.json` and name the parent if it has one. Never adopt it |
 | Open session under 36h | Resume: same id, append `session_resume` |
 | Open session 36h+ | Close it in preflight with `session_end {inferred:true}`, then open a new one |
 | Deriving the session id | See **_The Substrate_ → Session ids** |
@@ -996,13 +1159,21 @@ something false into the record, or into a repo that isn't yours to write.**
 | "I'll set that field to the middle option — it's the safe default" | A guessed value is indistinguishable from a real one downstream. Ask. |
 | "I know this org's fields, I'll skip the discovery call" | Recall is not discovery. An admin can change the set without telling you, and you'd never know. |
 | "Discovery returned a field nobody mentioned, I'll leave it out quietly" | A silently skipped field reads as "not applicable" to whoever reads the record next. Set it or say it's unset. |
-| "The board auto-adds new issues, so I don't need to link it" | Auto-add workflows are scoped to some repos and not others, and you cannot read that scope from here. The repo you're standing in may not be covered — and adding is idempotent, so linking costs nothing. |
+| "The board auto-adds new issues, so I don't need to link it" | Auto-add workflows are scoped to some repos and not others, and you cannot read that scope from here. The repo hosting this thread may not be covered — and adding is idempotent, so linking costs nothing. |
 | "Setting the Issue Fields is the same as putting it on the project" | Four separate mechanisms sit on that issue. An issue can carry every field the org defines and be on no board at all. |
 | "It's on no board, but that's a board-config problem, not mine" | An issue nobody can see on the board is work nobody plans around. Link it or say it isn't linked. |
 | "There's no sizing field, but this one is close enough" | Closest ≠ correct. It records a different field. Report the role unfilled instead. |
 | "The field write failed, so it can't be set" | One failed rung is not three. Walk them, then name what you tried. |
 | "Exit criteria can be added once the track takes shape" | Then it never is, and the track sits on the Gantt forever. It's required at creation. |
 | "I'll just commit the branch's first change while I'm here" | start-work creates branches and issues. It does not modify, commit, or push product-repo files. |
+| "The base has no remote, so I can't run — I'll error out" | A working directory with no remote is a normal place to run a session from — it's what layout P looks like. Read the children's remotes, then `tracking-org`, then ask once and record it. |
+| "No repo here, so I'll cut the branch in the first child that looks right" | "Looks right" is not a source. The repo line is rendered from the repo set with its path, and `— ask` when more than one child could host it. |
+| "The repo is called `api` on GitHub, so it's at `<base>/api`" | A clone's directory name is whatever the developer typed. Read the path off the repo set entry, which came from an actual remote. |
+| "The children mostly belong to msa1624, so that's the org" | The premise of layout P is that they all do. A mismatch means the premise is wrong, and a majority vote would bury exactly that. |
+| "I'm in the repo but there's no session — nothing was opened" | The parent is the other place this developer might have started from. One `ls` tells you, and it costs nothing to name the directory instead of declaring the session absent. |
+| "The directory is called `acme-web`, so the org is `acme`" | A directory name implies nothing about which GitHub org owns the work. Ask, and write the answer down so it's asked once. |
+| "I'll add the tracking paths to `.gitignore` — that's what it's for" | `.gitignore` is tracked. Writing it modifies the product repo and lands in someone's commit. `.git/info/exclude` does the same job and touches nothing tracked. |
+| "The clone is inside the repo now, so committing it is fine" | The record is out-of-band precisely so that abandoning or squashing the work doesn't take its history with it. Exclude it. |
 
 ## The Bottom Line
 

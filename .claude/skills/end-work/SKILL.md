@@ -35,9 +35,10 @@ NO CLEAN HANDOFF WITH UNCOMMITTED OR UNPUSHED WORK
 Checked first, on every run, and reported at the top. Not a footnote, not "worth mentioning."
 
 **The check runs over the worktree set derived in Step 1** — every worktree the session touched
-**plus the repo the developer is standing in**, and with no session open, the current repo plus every
-repo on their timeline since the window. A session that branched in three repos leaves work in three
-trees, and the developer wraps up in one of them.
+**plus the repo set** (the repo the developer is standing in, or every repo in their workspace when
+they're standing above them), and with no session open, the repo set plus every repo on their
+timeline since the window. A session that branched in three repos leaves work in three trees, and the
+developer wraps up in one of them.
 
 **It is never `session.threads[]` alone, and never empty.** On a no-session run that list is empty,
 and iterating it silently checks nothing — on precisely the run where nobody opened a session and
@@ -68,42 +69,126 @@ When a case isn't covered, decide by these.
 
 ### Paths
 
-Derive the org once per run — `git config --get remote.origin.url` — and parse the owner. Every path
-follows deterministically. **Nothing records these paths and nothing caches them.**
+Resolve three things once per run, before touching anything. Every path below follows
+deterministically from them. **Nothing records these paths and nothing caches them.**
+
+**1. The base** — the working directory the skill was invoked in, as an **absolute** path (`pwd`).
+Resolve it once and reuse that absolute form everywhere. A bare relative path is not good enough:
+this skill iterates `session.threads[].worktree` and `cd`s between product repos, and a relative
+base silently retargets the moment it does.
+
+**2. The layout and the repo set.** The base is one of two shapes, and one command tells you which:
+
+```bash
+git -C <base> rev-parse --show-toplevel 2>/dev/null
+```
+
+| Result | Layout | Repo set | Current repo |
+|---|---|---|---|
+| A path | **R** — the base is, or sits inside, an org repo | that one repo | it |
+| Nothing | **P** — the base is a parent of org repo clones | every depth-1 child holding a `.git`, mapped to `owner/repo` from its remote | **none** |
+
+**Layout R is the one-element case of layout P, not a separate mode.** Scan one level down, never
+recursively — a workspace's repos are its children, and walking deeper turns a vendored checkout into
+a candidate product repo. **In layout P every child belongs to the org**; a child whose owner differs
+is a violated premise to name, not a case to resolve silently.
+
+The repo set matters here for one reason: it is what keeps **the worktree set** non-empty in layout
+P, where there is no current repo to fall back on. See *The worktree set* in Step 1.
+
+**3. The org** — in this order, stopping at the first that answers:
+
+| Source | How |
+|---|---|
+| The current repo's remote *(layout R)* | `git config --get remote.origin.url`, parsed for the owner |
+| The repo set's remotes *(layout P)* | the owner they agree on. **They disagree → ask; never pick a majority** |
+| A recorded answer | `<base>/.claude/tracking-org`, one line, the org login |
+| The developer | Ask once, then **write it to `<base>/.claude/tracking-org`** so no later run asks again |
+
+**A base with no git remote is normal, not an error.** In layout P the base never has one — the org
+comes from its children. Falling back to the recorded answer is the designed path, not a degraded one.
 
 | What | Path |
 |---|---|
-| Tracking clone | `~/.claude/.tracking/<org>/` |
-| Session cursor | `~/.claude/<org>.status.json` |
+| Tracking clone | `<base>/.claude/.tracking/<org>/` |
+| Session cursor | `<base>/.claude/<org>.status.json` |
+| Org record | `<base>/.claude/tracking-org` |
 
 The cursor lives **outside** the clone deliberately: a file that must survive a reclone, a
 `git clean`, or a bad rebase inside that clone cannot live where the clone's own git operations reach
-it. `~/.claude/<org>.snapshot.json` belongs to `/snapshot` — **never open it.**
+it. `<base>/.claude/<org>.snapshot.json` belongs to `/snapshot` — **never open it.**
 
-**Product repos get nothing.** No cursor, no clone, no tracking directory, no `.gitignore` entry.
+**The record is per working directory, not per machine.** This matters more here than anywhere else
+in the workflow: **end-work must run from the same base that start-work ran from.** A different
+directory has a different cursor, so the session you are trying to close will simply not be there.
+Before concluding a session was never opened or was already closed, confirm you are in the base it
+was opened from. The *Resolve the session* step below covers how to tell the two apart.
+
+**The two layouts are the common way this goes wrong**, because both are legitimate places for one
+developer to start from — the repo, or its parent. Step 1 checks the neighbouring one before
+reporting a session absent.
+
+### When the base is inside a git repo *(layout R)*
+
+The record is **out-of-band** (principle 5) — it must never be committed into the work it describes.
+So when `<base>` sits inside a git repo, exclude it, **using `.git/info/exclude`, not `.gitignore`**:
+
+```bash
+git -C <base> rev-parse --show-toplevel        # is there a repo, and where is its root?
+# if there is, ensure these lines exist in <toplevel>/.git/info/exclude:
+.claude/.tracking/
+.claude/*.status.json
+.claude/*.snapshot.json
+.claude/tracking-org
+```
+
+**`.git/info/exclude` rather than `.gitignore` is the whole point.** `.gitignore` is a tracked file;
+writing it would modify the product repo's contents and land in someone's commit — and this skill's
+iron law is that it never modifies product-repo files. `.git/info/exclude` is local-only and
+untracked, so the exclusion costs the repo nothing and that law stays intact.
+
+Note what is **not** excluded: `.claude/skills/` and other project Claude config are ordinary
+tracked files and none of this applies to them.
+
+**In layout P there is nothing to exclude and nothing to check** — `<base>/.claude/` sits in no repo,
+so the record is already out-of-band. **Never write exclusion lines into the child repos.**
 
 ### Write surfaces
 
 | Location | Writes permitted |
 |---|---|
-| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The yes was given at the confirmation block, not at the push. |
-| `~/.claude/<org>.status.json` | Local cursor writes. No git involved. |
+| `<base>/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The yes was given at the confirmation block, not at the push. |
+| `<base>/.claude/<org>.status.json` | Local cursor writes. No git involved. |
 | Issues the session touched | Comments, labels, state, and field values — this skill's documented job. |
 
 **Never an issue body, never a PR, never a product repo's file contents.**
 
 ### Bootstrap & access — every run, in this order
 
+**B0. Resolve the base, the layout, the repo set, the org, and the exclusion.** All of it before any
+path is used — the clone and cursor paths are not computable until the org answers, and the org's
+first two sources are the layout's.
+
+```bash
+pwd                                            # the base, absolute
+git -C <base> rev-parse --show-toplevel        # layout R or P — and, in R, where to check the exclusion
+git -C <base>/*/ config --get remote.origin.url  # layout P: the repo set, one level down
+cat <base>/.claude/tracking-org                # org, recorded fallback
+```
+
+If no org source answers, **ask once and record the answer** — do not guess an org from a directory
+name.
+
 **B1. Is the clone present?**
 
 ```bash
-git -C ~/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
+git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
 ```
 
 Present → pull (B3). Missing → `search_repositories(query: "repo:{org}/tracking")`.
 
 **B2. Bootstrap.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
-~/.claude/.tracking/{org}`, and say where. **Remote does not exist → offer to create it and wait for
+<base>/.claude/.tracking/{org}`, and say where. **Remote does not exist → offer to create it and wait for
 a clear yes**; creating a repo is outward-facing and never happens implicitly. Seed `README.md`
 (explaining the format for anyone opening the repo cold), `.gitattributes` containing exactly
 `*.jsonl merge=union`, and an empty `tracks.yml`, in one commit.
@@ -111,7 +196,7 @@ a clear yes**; creating a repo is outward-facing and never happens implicitly. S
 **B3. Pull, every run.**
 
 ```bash
-git -C ~/.claude/.tracking/<org> pull --rebase
+git -C <base>/.claude/.tracking/<org> pull --rebase
 ```
 
 A clone left dirty by a previous run gets **its own report line** — never merged into the developer's
@@ -120,7 +205,7 @@ uncommitted-work blocker. Different problems, different fixes.
 **B4. Write access *(end-work only)* — after B3, before writing anything.**
 
 ```bash
-git -C ~/.claude/.tracking/<org> push --dry-run
+git -C <base>/.claude/.tracking/<org> push --dry-run
 ```
 
 **B4 never runs before B3.** A clone behind its remote fails with a non-fast-forward rejection, which
@@ -336,7 +421,7 @@ sequenceDiagram
     participant D as Developer
     participant S as end-work
     participant P as every session worktree
-    participant T as ~/.claude/.tracking/{org}
+    participant T as <base>/.claude/.tracking/{org}
     participant G as GitHub
 
     D->>S: wrap up
@@ -362,12 +447,34 @@ sequenceDiagram
 
 ### Step 1: Read the Session
 
-Derive the org. Read `~/.claude/<org>.status.json`.
+Derive the org. Read `<base>/.claude/<org>.status.json`.
 
 | What you find | What you do |
 |---|---|
 | A live `session` | Its `started_at` is the window; `threads[]` seeds the worktree set below. |
-| No `session` | No session was opened. Say so, use midnight today as the window, and derive the worktree set from the fallback below. Still write `last_session` at the end. |
+| No `session` | **First rule out the wrong base** (see below). Then: no session was opened. Say so, use midnight today as the window, and derive the worktree set from the fallback below. Still write `last_session` at the end. |
+
+**"No session" and "not this base" look identical, and only one of them is true.** The cursor is
+per working directory, so running end-work somewhere other than where start-work ran finds an
+absent `session` and reports a session that never happened — while the real one stays open and goes
+stale. Before accepting the empty reading, check whether a cursor exists elsewhere:
+
+```bash
+ls <base>/.claude/*.status.json          # this base — the authoritative one
+ls <base>/../.claude/*.status.json 2>/dev/null   # layout R only: the parent, the other place they might have started
+```
+
+**The parent check is layout R's one concession, and it is a look, not a read.** A developer who
+opened the session from the workspace parent and is now standing in a repo would otherwise be told
+their session doesn't exist. Found one → **name the directory and stop**, so they can re-run there.
+Never open it, never adopt its `session`, never write its `last_session`. A cursor found elsewhere
+belongs to that base, and writing this base's `last_session` from it corrupts both.
+
+**In layout P there is no parallel check.** Do not descend into the children looking for cursors —
+start-work never writes one there, so anything found would be some other base's record.
+
+If no cursor turns up and the developer believes they opened a session, say so plainly and ask which
+directory they started in, rather than closing a session here that was never opened here.
 
 `get_me()` for the developer's handle.
 
@@ -379,14 +486,24 @@ never opened a session and is likeliest to have work sitting uncommitted.
 
 | Case | The set |
 |---|---|
-| Live session | Every distinct `session.threads[].worktree`, **plus** the repo root of the current directory if it isn't already in the list |
-| No session | The repo root of the current directory, **plus** the repo root of every distinct `repo` on this dev's timeline events since the window. The clone is local — this is a file scan, not an API call |
+| Live session | Every distinct `session.threads[].worktree`, **plus the current repo** (layout R) **or the repo set** (layout P) |
+| No session | **The current repo** (layout R) **or the repo set** (layout P), **plus** the local path of every distinct `repo` on this dev's timeline events since the window, where that repo is in the repo set. The clone is local — this is a file scan, not an API call |
 
 Deduplicate by resolved absolute path.
 
-**A worktree set of size zero is a bug, not a clean run.** It always contains at least the repo you
-are standing in. If the derivation somehow produces nothing, say so and check the current directory
-anyway.
+**The repo set is what makes layout P safe.** "The repo you are standing in" is exactly what a
+workspace base doesn't have, and a no-session run from one is the likeliest run of all to have
+uncommitted work sitting in a child repo. So in P the law sweeps **every child repo**, session or no
+session — a wider net than R's, which is correct: the developer told you those repos are all in
+scope by opening Claude above them.
+
+**A worktree set of size zero is a bug, not a clean run.** In R it holds at least the current repo;
+in P at least the repo set. If the derivation somehow produces nothing — a layout-P base with no
+child clones at all — **say so explicitly** rather than reporting a clean wrap-up, because a clean
+result and an empty sweep are indistinguishable to whoever reads the report.
+
+A timeline `repo` with no clone in the set cannot be checked. **Report it by name as unchecked** —
+never let it fall out of the sweep silently.
 
 ### Step 2: Sync, Then Write-Access Preflight (BEFORE ANYTHING IS WRITTEN)
 
@@ -432,7 +549,7 @@ three repos are three separate pieces of work to land.
 Also check the tracking clone itself:
 
 ```bash
-git -C ~/.claude/.tracking/<org> status --short
+git -C <base>/.claude/.tracking/<org> status --short
 ```
 
 A clone left dirty by a previous run gets **its own report line**. It is never merged into the
@@ -735,9 +852,9 @@ conflated the two.
 One commit, tracking repo only:
 
 ```bash
-git -C ~/.claude/.tracking/<org> add -A
-git -C ~/.claude/.tracking/<org> commit -m "session 2026-07-25-nilendu-01 — 3 threads, 3 repos"
-git -C ~/.claude/.tracking/<org> push
+git -C <base>/.claude/.tracking/<org> add -A
+git -C <base>/.claude/.tracking/<org> commit -m "session 2026-07-25-nilendu-01 — 3 threads, 3 repos"
+git -C <base>/.claude/.tracking/<org> push
 ```
 
 | Push outcome | What you do |
@@ -749,7 +866,7 @@ git -C ~/.claude/.tracking/<org> push
 ### Step 9: Close the Session
 
 Last, after the report is delivered: move `session` into `last_session` in
-`~/.claude/<org>.status.json`, then **delete `session` entirely**. The `last_session` shape is
+`<base>/.claude/<org>.status.json`, then **delete `session` entirely**. The `last_session` shape is
 **_The Substrate_ → `<org>.status.json`**.
 
 **Write it even when Step 3 found blocking changes.** The boundary records when you stopped, not
@@ -806,9 +923,23 @@ Omit the Pending Changes section entirely when Step 3 comes back clean.
 ## Red Flags — STOP
 
 - Writing anything before the write-access preflight has passed
+- Reporting "no session was opened" without ruling out that this is a **different base** than the
+  one start-work ran in — the real session stays open and goes stale while you say it never existed
+- Adopting a cursor found under some other base — it belongs to that base, and writing this base's
+  `last_session` from it corrupts both
+- Using a **relative** base after iterating into a product worktree
+- Guessing the org from the directory name because the base has no remote
+- Deriving the worktree set from "the current directory" in layout P, where there is no current repo
+   — the set collapses and the iron law passes on an unswept workspace
+- Reporting a clean wrap-up from an empty worktree set instead of saying the sweep found nothing to
+  sweep
+- Dropping a timeline `repo` that has no local clone, instead of reporting it unchecked
+- Descending into child repos hunting for cursors — start-work never writes one there
+- Picking a majority owner when the repo set's remotes disagree, instead of asking
+- Writing the tracking paths into a product repo's `.gitignore` instead of `.git/info/exclude`
 - Iterating `session.threads[]` instead of the worktree set — on a no-session run that list is empty
   and the iron law silently passes on exactly the run that needs it most
-- Running `git status` only in the current directory when the worktree set lists three
+- Running `git status` only in the base when the worktree set lists three
 - Concluding "no push access" from a `push --dry-run` that failed non-fast-forward, before B3 has run
 - A missing worktree skipped silently instead of reported
 - Writing a field name you did not discover this run
@@ -840,10 +971,16 @@ something false into the record, or into a surface that isn't yours to write.**
 
 | Situation | Action |
 |---|---|
-| Start of every run | Read `status.json` → write-access preflight → iron law in every worktree |
+| Start of every run | Resolve base + layout + repo set + org (B0) → read `status.json` → write-access preflight → iron law in every worktree |
+| Which layout | `git -C <base> rev-parse --show-toplevel` — a path is R, nothing is P |
+| Base is a parent of clones (P) | Repo set = depth-1 children with a `.git`. No current repo; the repo set stands in for it everywhere |
+| Base has no git remote | Layout P's normal state — org comes from the children, else `<base>/.claude/tracking-org`, else ask once and write it |
+| Repo set's remotes disagree on the owner | Violated premise. Name it and ask; never take the majority |
+| Cursor shows no session | Rule out the wrong base first. In layout R, `ls <base>/../.claude/*.status.json` and name the parent if it has one — never adopt it |
 | No push access | Stop before writing anything. Mention `--local-only`, don't default to it. |
 | Which worktrees to check | The **worktree set** from Step 1 — never `session.threads[]` directly |
-| No session open | The set is still non-empty: current repo + repos on the timeline since the window |
+| No session open | The set is still non-empty: current repo (R) or the whole repo set (P), plus repos on the timeline since the window |
+| A timeline repo with no local clone | Report it unchecked, by name |
 | Worktree gone from disk | Report it as its own line |
 | Pending changes exist | Top-of-report BLOCKING section, grouped by repo, with an action-required line |
 | Tracking clone dirty | Separate report line, never the developer's blocker |
@@ -874,7 +1011,12 @@ something false into the record, or into a surface that isn't yours to write.**
 | "Relationships has no write tool, so the timeline is all we can do" | It has no *MCP* write tool. Rung 2 writes it. The timeline is authoritative by design, not by inability. |
 | "The commits are local, that still counts as done" | Unpushed work is invisible to everyone else. It isn't handed off until it's pushed. |
 | "I'm standing in ~/work/api, so that's the repo to check" | The session touched three. Iterate the worktree set. |
+| "I'm in ~/work and it isn't a repo, so there's nothing to sweep" | It's a workspace of N repos, and every one of them is in scope — that's what opening Claude above them means. Sweep the repo set. |
+| "The session listed one worktree, so the other two children don't matter" | In a workspace base every child is in scope. The listed worktrees are a floor, not a ceiling. |
 | "There's no session, so there's nothing to check" | The run where nobody opened a session is the run where uncommitted work is likeliest to be forgotten. The worktree set is never empty. |
+| "The cursor has no session, so none was opened" | The cursor is per working directory. An empty reading in the wrong directory is indistinguishable from an empty reading in the right one — and only one of them means what you're about to say. Rule out the base first. |
+| "I found a cursor in another directory, I'll close that session from here" | It belongs to that base. Closing it from here writes `last_session` into the wrong cursor and leaves the right one open. Tell the developer which directory to run in. |
+| "The base has no remote, so I can't determine the org" | That's layout P's normal state. The children's remotes carry it; then `<base>/.claude/tracking-org`; then ask once and write it. A base's own remote is one source of the org, not the only one. |
 | "`push --dry-run` failed, so they can't push" | Read the failure. Non-fast-forward is a stale clone; permission-denied is a permission. Pull, re-check, then conclude. |
 | "~/work/platform is gone, so there's nothing to report there" | A worktree that vanished mid-session is a finding, not a non-event. Say it. |
 | "The tracking clone is dirty too, I'll list it with the other blockers" | Different problem, different fix. The developer's work needs committing; the clone needs regenerating. |

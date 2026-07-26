@@ -75,8 +75,9 @@ blocker goes on the issue and **never** into the timeline; that a new track can'
 
 Its iron law: **uncommitted or unpushed work blocks a clean handoff** — checked first, every run,
 reported at the top, grouped by repo. Critically, the check runs over a **derived worktree set** —
-every `session.threads[].worktree` *plus the repo you're standing in*, or with no session open, the
-current repo plus every repo on your timeline since the window. **It is never empty**, and it is
+every `session.threads[].worktree` *plus the repo set* (the current repo, or in a workspace base
+every child clone), or with no session open, the repo set plus every repo on your timeline since the
+window that has a local clone. **It is never empty**, and it is
 never delegated to a subagent. Write access is verified *after the pull and before anything is
 written*. Research then runs as four parallel agents, and their findings become **one confirmation
 block** — where a bare yes covers every reversible write but **never a closure**. It pushes one
@@ -84,8 +85,8 @@ commit, showing the diff in the same step, and closes the session into `last_ses
 handoff was dirty.
 
 **What to probe:** that all three worktrees get checked in a three-repo session and a vanished
-worktree is reported rather than skipped; **that a run with no session open still checks the current
-repo instead of silently passing**; that the tracking clone's dirtiness stays out of the developer's
+worktree is reported rather than skipped; **that a run with no session open still sweeps the repo set
+instead of silently passing**; that the tracking clone's dirtiness stays out of the developer's
 blocker section; that no-push-access stops the run *before* any write, and that a **non-fast-forward
 dry-run is not misreported as no-push-access**; that a rejected push discards and regenerates `views/`
 instead of merging it; that a `Fixes #N` keyword surfaces as a question and a **bare yes does not
@@ -94,8 +95,8 @@ closes on a dirty run.
 
 ### snapshot
 
-**Explicitly invoked only** — `/snapshot`, not "where do things stand." Three layers (current repo,
-org rollup, who did what) plus the four joins that neither source can produce alone: planned vs.
+**Explicitly invoked only** — `/snapshot`, not "where do things stand." Three layers (detail on the
+repos in scope, org rollup, who did what) plus the four joins that neither source can produce alone: planned vs.
 actual, effort vs. what the work took, declared vs. encountered dependencies, and a complete org
 rollup off one `git pull`. Read-only: the single file it writes is its own cursor. The layers and
 joins run as **four parallel read-only agents**, off one field discovery the skill performs and hands
@@ -172,17 +173,51 @@ attempt behind it makes the skill re-walk the ladder itself.
 
 ## State
 
-**Nothing lives in this repo.** All local state is outside every git repo on the machine:
+All local state hangs off `<base>/.claude/`, where `<base>` is the directory the skill was invoked
+in, absolute:
 
 | Path | Owner | Contents |
 |---|---|---|
-| `~/.claude/.tracking/<org>/` | all three | clone of the org tracking repo |
-| `~/.claude/<org>.status.json` | start-work / end-work | `last_session` + the live `session` and its threads |
-| `~/.claude/<org>.snapshot.json` | `/snapshot` | one `last_checked` timestamp |
+| `<base>/.claude/.tracking/<org>/` | all three | clone of the org tracking repo |
+| `<base>/.claude/<org>.status.json` | start-work / end-work | `last_session` + the live `session` and its threads |
+| `<base>/.claude/<org>.snapshot.json` | `/snapshot` | one `last_checked` timestamp |
+| `<base>/.claude/tracking-org` | all three | the org login, recorded once when nothing else answers |
 
 The two cursor files share **zero fields**, and neither skill opens the other's. Both live outside
 `.tracking/` deliberately: a file that must survive a reclone or a bad rebase inside that clone can't
 live where the clone's own git operations can reach it.
+
+**The state is per working directory, not per machine** — which is what makes multiple orgs, and
+multiple workspaces within one org, work without a registry. It also means a session must be opened
+and closed from the same base; the skills check the neighbouring layout before declaring a session
+absent, but they never adopt another base's cursor.
+
+### The two layouts
+
+Developers open Claude in different places, so the base is not assumed to be a repo. One command
+decides which shape it is — `git -C <base> rev-parse --show-toplevel`:
+
+| | Layout **R** | Layout **P** |
+|---|---|---|
+| Base is | a product repo, or a directory inside one | a parent of product repo clones |
+| Repo set | that one repo | every depth-1 child holding a `.git` |
+| Current repo | it | **none** |
+| Branch hint | read from HEAD | **none** — N children, no "the" branch |
+| `.git/info/exclude` | required, in that repo | nothing to exclude; `.claude/` is in no repo |
+| end-work's sweep | the current repo + the session's worktrees | **every child repo** + the session's worktrees |
+| snapshot Layer 1 | that repo | one section per child repo |
+
+**R is the one-element case of P**, so the skills carry one path, not two. In layout P every child is
+assumed to belong to the org; a child whose owner differs is a violated premise the skills name and
+ask about rather than resolving silently. The repo set is also where start-work reads a new thread's
+**worktree path** from — it never composes `<base>/<repo name>`, since a clone's directory name is
+whatever the developer typed.
+
+**What to probe:** that a layout-P run cuts the branch in the right child and stores its real path;
+that a layout-P `/end-work` with no session open sweeps every child rather than passing on an empty
+set; that a repo on the timeline with no local clone is reported unchecked; that starting in the repo
+and ending in the parent names the parent's cursor instead of declaring the session absent; that
+nothing writes `.git/info/exclude` into a child repo.
 
 ## Environment notes for testers
 
