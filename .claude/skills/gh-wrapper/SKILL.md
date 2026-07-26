@@ -1,6 +1,6 @@
 ---
 name: gh-wrapper
-description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when linking issues across repositories, or when about to report that a GitHub field, board membership, or relationship cannot be set
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, or any board-defined field), when linking issues across repositories, or when about to report that a GitHub field, board membership, or relationship cannot be set
 ---
 
 # gh Wrapper: Route to the Right GitHub Surface
@@ -19,11 +19,17 @@ capability. Something further down the ladder can almost always do it.
 ## The Iron Law
 
 ```
-EVERY ISSUE FIELD IS SET WITH A VERIFIED VALUE
+EVERY FIELD DISCOVERY RETURNS IS SET WITH A VERIFIED VALUE
 OR EXPLICITLY REPORTED UNSET.
 
 NEVER GUESSED. NEVER APPROXIMATED. NEVER SILENTLY SKIPPED.
 ```
+
+**"Every field" means org Issue Fields *and* Projects v2 board item fields.** They
+are different mechanisms with different write paths (see *Projects v2* below), and
+the law does not distinguish between them. An issue landing on a board with an
+empty `Status`, `Size`, or `Estimate` is the same corrupted record as one with an
+empty Priority — it just fails silently in a different view.
 
 A guessed value is indistinguishable from a real one downstream. A field you
 quietly skipped reads as "not applicable" to whoever reads the record next. Both
@@ -133,6 +139,36 @@ Contrast this with the `options: []` trap below, which is the same shape
 inverted: there, empty is a lie told by the wrong node; here, empty is the truth.
 Telling them apart is exactly what the owner-type probe is for.
 
+## Preflight: Before Creating Any Issue
+
+**Creating an issue is not one lookup, it's four, and they run together, before
+the write.** An agent that starts from the Issues table below and follows only
+the row for `issue_write(method: "create")` never sees the Projects v2 section
+unless it goes looking — that's how a board link gets missed without anyone
+deciding to skip it. Do all four in one pass, every time, regardless of which
+table or command sent you here:
+
+```
+BEFORE issue_write(method:"create") / gh issue create — ALWAYS:
+1. list_issue_fields(owner)         → issue fields to set or report unset
+2. list_issue_types(owner)          → valid type, if the repo uses types
+3. projectsV2 discovery (below)     → board(s) to link
+4. projectV2.fields discovery       → board item fields to set or report unset
+                                      (Status, Size, Estimate, …)
+```
+
+None of the four is optional because the task "looked like" it didn't need it.
+Steps 3 and 4 are the ones with no visible symptom when skipped — the issue looks
+completely normal, fields and all, and is simply invisible to (or blank on)
+whatever board people actually plan from. Run them before the create, not as a
+follow-up once someone asks why the issue isn't on the board or why its `Status`
+is empty.
+
+**Ordering:** steps 1–2 are written *with* the create; step 4's values can only be
+written *after* the item is on the board, because a board item field value needs an
+item id that doesn't exist until step 3's add. Discover all four up front anyway —
+discovering late is how "I'll set Status after" becomes never.
+
 ## Issue Fields — Discover, Never Hardcode
 
 Org-level Issue Fields (Settings > Planning > Issue fields) live **on the issue
@@ -234,10 +270,18 @@ Clear with `{ fieldId: "IFSS_...", delete: true }`. Verify after writing:
 `gh api /repos/{o}/{r}/issues/{n} --jq '.issue_field_values'`.
 
 **Node-ID trap:** org Issue Field IDs (`IFSS_`/`IFD_`/`IFSSO_`) are a different
-space from Projects v2 field IDs (`PVTSSF_`). Using a board field ID with
-`updateProjectV2ItemFieldValue` on a mirrored field fails with
+space from Projects v2 field IDs (`PVTF_`/`PVTSSF_`/`PVTI_`). Using a board field
+ID with `updateProjectV2ItemFieldValue` on a mirrored field fails with
 *"Issue field values cannot be updated using the updateProjectV2ItemFieldValue
-mutation."* That error is a **signpost to rung 3, not a dead end.**
+mutation."* That error is a **signpost to the right mechanism, not a dead end** —
+the field is an org Issue Field wearing a board field's clothes, so write it here
+with `setIssueFieldValue`. See *Projects v2 Item Fields* for telling the two apart
+**before** you write, which is cheaper than reading the error.
+
+The error text names `updateIssueFieldValue`. Both that and `setIssueFieldValue`
+exist in the schema; `setIssueFieldValue` is the one verified above and sets
+several fields in one call. Don't treat the error's wording as evidence that the
+mutation documented here is wrong.
 
 **`options: []` is a lie, not a diagnosis.** Querying a *board's* mirrored
 single-select over GraphQL returns an empty options list even when the field has
@@ -247,8 +291,12 @@ working options. It means you queried the wrong node, nothing more.
 ❌ options: [] → "the field has no options configured" → "impossible to set"
 ❌ options: [] → ask a human to "add the missing options"
 ✅ options: [] → wrong node — read options from `issueFields` (rung 3) or REST
+✅ options: [] → also a positive ID: this board field IS a mirror, so it is
+   written with setIssueFieldValue, never updateProjectV2ItemFieldValue
 ```
 
+A board-native single-select (`Status`, `Size`) returns its real options from the
+same query — so empty-vs-populated is a mechanism signal, not a health signal.
 Never conclude a field is unsettable from an empty options list, and never send
 a human to reconfigure a field that is already correct.
 
@@ -271,9 +319,9 @@ similar type — and they are a different feature and not the record.
 If the task names a field the org doesn't define, say it doesn't exist. Do not
 invent it, and do not map it onto the nearest field that does.
 
-## Projects v2 — Board Membership Is a Fourth Mechanism
+## Projects v2 — Board Membership and Board Fields Are Separate Mechanisms
 
-Four separate mechanisms sit on the same issue and are read and written
+Five separate mechanisms sit on the same issue and are read and written
 differently. Conflating any two is wrong even when the result looks right:
 
 | Mechanism | Where it lives | Write path |
@@ -282,10 +330,23 @@ differently. Conflating any two is wrong even when the result looks right:
 | **Milestone** | native issue field | `milestone` on the issue write |
 | **Relationships** | dependencies API | rung 2, `gh issue edit --add-blocked-by` |
 | **Projects v2 membership** | the board, not the issue | the ladder below |
+| **Projects v2 item fields** | the board *item*, not the issue | `updateProjectV2ItemFieldValue` / `gh project item-edit` |
 
-**Board membership is the one that fails silently.** The others are visible on the
-issue the moment you look at it; an issue that is on no board looks completely
-normal, and only the people planning off that board ever notice.
+**The last two are the ones that fail silently**, and they fail independently. The
+first three are visible on the issue the moment you look at it. An issue on no
+board looks completely normal, and only people planning off that board notice. An
+issue that *is* on the board but has an empty `Status` or `Size` is worse — it is
+visibly there and quietly uncategorised, so it drops out of every grouped view and
+every burndown while looking tracked.
+
+**Membership is not fields.** Adding an item to a board sets no values on it. A
+board item created by `item-add` starts with every custom field empty, and nothing
+about the add prompts you to fill them. Doing step 3 and skipping step 4 is the
+default failure, not an unusual one.
+
+**Run this discovery before every issue create, not after** — see *Preflight:
+Before Creating Any Issue* above. This section is the mechanics; that one is the
+gate that makes sure you actually get here.
 
 ### Discover at call time — never hardcode a project number
 
@@ -315,27 +376,130 @@ auto-add workflow already fired. Never skip a link on the theory that automation
 probably handled it; automation is usually scoped to some repos and not others,
 and you cannot see its scope from here.
 
-### The gate — report, never silently skip
+### The gate — link, never silently skip
 
-Same rule as a discovered Issue Field left unset:
+Same rule as a discovered Issue Field left unset, but for board membership the
+action is a link, not a question:
 
-> **A discovered project that the issue is not on is REPORTED TO THE CALLER,
-> never silently skipped.**
+> **A discovered project that the issue is not on gets the issue ADDED TO IT,
+> never silently skipped, never left for a human to decide.**
 
 Return all three of these distinctly, and never let them collapse into one silence:
 
-| State | What it means | Report as |
+| State | What it means | Do |
 |---|---|---|
 | No project found | the owner has no board | `project: none` — nothing to link |
-| Project found, issue on it | already linked | `on_project: true` |
-| Project found, issue **not** on it | the failure case | `on_project: false` — **the caller must be told** |
-| Several projects found | ambiguous | list them all; **never pick one** |
+| Project found, issue on it | already linked | `on_project: true` — nothing to do |
+| Project found, issue **not** on it | the default case | **add it** (rung 2/3 below), then report `on_project: true` |
+| Several projects found | ambiguous | list them all; **never pick one** — ask which board(s), or add to all if the caller already said so |
 
-**Discover and report. Do not link on your own initiative.** This skill has no
-confirmation surface — it cannot show a source line or obtain a yes, and a board
-write made without one is a written value the developer never accepted. The
-calling skill owns the decision and the consent; this skill owns knowing, and
-makes it impossible for the caller not to know.
+**Discover, then link. Don't stop to ask.** Adding is idempotent and reversible
+(removing an item from a board is a normal, low-cost action), which is exactly
+why this is the one write in this skill that doesn't wait for a confirmation
+round-trip — the whole point of running discovery first is so the link happens
+automatically off the back of it, not so the caller has something to relay to a
+human. Asking "should I add it?" after discovery already answered "there's a
+board and the issue isn't on it" is redoing the caller's job by hand. The only
+things that still get surfaced to the caller are the genuinely ambiguous cases
+above (no board, several boards) — never the plain "found one board, issue
+belongs on it" case.
+
+## Projects v2 Item Fields — Status, Size, Estimate
+
+Once an issue is on a board it has a second, independent set of fields. **These
+are not org Issue Fields and they are not set by the issue write.** They are the
+ones people actually plan from: `Status` decides which column the card sits in,
+`Size` and `Estimate` drive every capacity view a board has.
+
+### Discover the board's fields at call time
+
+Field ids are per-board — never carry one between projects, and never hardcode an
+option id. `fields` is a **union**, so fragments are mandatory:
+
+```bash
+gh api graphql -f query='{ organization(login:"<owner>"){ projectV2(number:<n>){
+  fields(first:30){ nodes{
+    ... on ProjectV2FieldCommon       { id name dataType }
+    ... on ProjectV2SingleSelectField { id name dataType options { id name } }
+    ... on ProjectV2IterationField    { id name dataType }
+  } } } } }'
+```
+
+Swap the root to `user(login:)` for a personally-owned board — projects swap, as
+always.
+
+### Three kinds of field come back, and only one of them you write here
+
+This is the distinction that decides which mutation to call, and getting it wrong
+produces an error that reads like a permissions problem:
+
+| Kind | Examples | Write path |
+|---|---|---|
+| **Board-native** | `Status`, `Size`, `Estimate`, any field defined on the board | `updateProjectV2ItemFieldValue` — **this section** |
+| **Mirrored org Issue Field** | any board field whose name is also in `list_issue_fields` | `setIssueFieldValue` on the **issue** — see *Issue Fields* above |
+| **Built-in projections** | `Title`, `Assignees`, `Labels`, `Milestone`, `Repository`, `Linked pull requests`, `Reviewers`, `Parent issue`, `Sub-issues progress`, `Created`, `Updated`, `Closed` | Not writable on the board at all — set them on the issue |
+
+**The reliable test is a name cross-reference, and you already have both lists.**
+A board field whose name appears in this run's `list_issue_fields(owner)` is a
+mirror; write it with `setIssueFieldValue`. This works for every data type, which
+matters because date mirrors give you no other signal.
+
+**Corroborating signal, single-selects only:** a mirrored single-select returns
+`options: []` from the board node while a board-native one returns its real
+options. That is the same `options: []` trap documented above, seen from the other
+side — it identifies a mirror, it never means a field is misconfigured.
+
+Verified on a live org board: `Size` (single-select, real options) and `Estimate`
+(number) accepted `updateProjectV2ItemFieldValue`. `Priority`, `Start date`, and
+`Target date` — all three also org Issue Fields — rejected it with
+*"Issue field values cannot be updated using the updateProjectV2ItemFieldValue
+mutation."* **That error means you picked the wrong mechanism, not that you lack
+permission.** Re-read the table above; do not escalate, and do not retry it.
+
+### The ladder for setting an item field
+
+| Rung | Path | Status |
+|---|---|---|
+| 1 — MCP | — | **Absent**, same as board membership. Say `mcp_absent` once; work rungs 2–3. |
+| 2 — `gh` flag | `gh project item-edit --id <item-id> --project-id <project-id> --field-id <field-id> --single-select-option-id <opt>` (or `--text` / `--number` / `--date` / `--iteration-id`) | Works. Needs the **item** id, not the issue number. |
+| 3 — GraphQL | `updateProjectV2ItemFieldValue(input:{projectId, itemId, fieldId, value:{…}})` | Works. Verified. |
+
+The `value` key is typed per field: `{singleSelectOptionId:"…"}`, `{number:3}`,
+`{text:"…"}`, `{date:"YYYY-MM-DD"}`, `{iterationId:"…"}`. Passing the wrong one is
+a validation error, not a silent no-op.
+
+Get the item id — the add returns it, or query it back:
+
+```bash
+gh api graphql -f query='{ organization(login:"<owner>"){ projectV2(number:<n>){
+  items(first:50){ nodes{ id content{ ... on Issue { number repository{ name } } } } } } } }'
+```
+
+Clear a value with `clearProjectV2ItemFieldValue(input:{projectId, itemId, fieldId})`.
+
+### The gate — same law, different mechanism
+
+> **Every board-native field the board defines is either set to a value the
+> conversation established, or reported unset by name. Never guessed, never
+> silently skipped.**
+
+Board membership gets linked automatically because adding is idempotent and
+reversible. **Board field values do not get that treatment** — a value is content,
+not a link, and inventing a `Size` or an `Estimate` is exactly the fabrication the
+Iron Law exists to prevent. `Status` is not an exception: "new issues start in
+Backlog" is a policy your workflow may define, and if it hasn't, that is a value to
+confirm rather than assume.
+
+So the two halves of Projects v2 resolve differently, and this is deliberate:
+
+| | Membership | Item fields |
+|---|---|---|
+| Discovered and missing | **link it, don't ask** | **set it if the value is established, else report unset** |
+| Why | idempotent, reversible, content-free | it writes content someone else reads as fact |
+
+Report unset board fields the same way you report unset Issue Fields — by name,
+in the same list. A caller who sees "Priority unset" and no mention of `Status`
+will reasonably assume `Status` was handled.
 
 ## Cross-Repo Work
 
@@ -401,7 +565,7 @@ typo. Introspect before concluding a field is missing.
 | `gh issue list --search "..."` | `search_issues(query: "repo:owner/repo ...")` |
 | `gh issue view N` | `issue_read(owner, repo, issue_number: N, method: "get")` |
 | `gh issue view N --comments` | `issue_read(..., method: "get_comments")` |
-| `gh issue create -t -b` | `issue_write(method: "create", ...)` — discover the org's fields with `list_issue_fields` and account for every one at create time |
+| `gh issue create -t -b` | `issue_write(method: "create", ...)` — run *Preflight: Before Creating Any Issue* first: Issue Fields, issue types, **and** Projects v2 boards, in one pass, before the write |
 | `gh issue edit N --add-label X` | `issue_write(method: "update", labels: [...])` — array replaces; fetch current via `issue_read(..., method: "get_labels")` first |
 | `gh issue edit N --add-assignee u` | `issue_write(method: "update", assignees: [...])` |
 | `gh issue close N` | `issue_write(..., state: "closed", state_reason: "completed")` |
@@ -490,8 +654,9 @@ returns is a receipt.
 ```
 YOU ARE READ-ONLY.
 Never call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
-any GraphQL mutation, or gh issue edit/create/close/comment. If a task seems to
-need one, return it in asks[] — never as an action.
+addProjectV2ItemById, updateProjectV2ItemFieldValue, any GraphQL mutation, or
+gh issue edit/create/close/comment or gh project item-add/item-edit. If a task
+seems to need one, return it in asks[] — never as an action.
 
 Walk the ladder: MCP tool → gh flag → gh api graphql. Never report something
 unreachable without walking all three and naming all three.
@@ -526,9 +691,9 @@ return is a coin flip. Non-empty `asks[]` **blocks every dependent write**.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — the latter is a permissions or transient failure, not a hallucination. |
-| **Discovery** — every proposed field name is in this run's `list_issue_fields` | Drop the proposal; report that field unset, naming it. |
+| **Discovery** — every proposed field name is in this run's `list_issue_fields` **or** this run's `projectV2.fields`, and the proposal names which | Drop the proposal; report that field unset, naming it. A proposal that doesn't say which of the two it means is not verified — the write paths differ. |
 | **Ladder honesty** — any unreachability claim is backed by `surface_log` entries at rungs 1, 2 **and** 3, or by `rung_reason: "mcp_absent"` | Treat as unproven. **The caller re-walks the ladder itself** before reporting anything unset. |
 | **Coverage** — `not_covered[]` is printed | Never omit it. |
 
@@ -567,10 +732,23 @@ agent in a wave reports it together and you deduplicate.
   no board looks completely normal and fails silently
 - Collapsing "no project exists" and "a project exists, this issue isn't on it"
   into the same silence
+- Adding an issue to a board and stopping there — membership sets no values; every
+  board-native field starts empty and stays that way until you write it
+- Discovering the board's fields but never accounting for `Status`, `Size`, or
+  `Estimate` — an item on a board with an empty Status looks tracked and is not
+- Guessing a `Status`, `Size`, or `Estimate` because the board "obviously" wants
+  one — board fields are content, and the Iron Law covers them
+- Treating "new issues go in Backlog" as a fact about GitHub rather than a policy
+  your workflow either defined or didn't
+- Reaching for `updateProjectV2ItemFieldValue` on a board field whose name is also
+  an org Issue Field — cross-reference the two lists before writing, not after the
+  error
+- Reading the mirror error as a permissions problem and escalating, or retrying it
+  unchanged
 - Concluding a personal account has no projects from an empty `organization(...)`
   query — projects are **not** org-only; switch to `user(login:)` and ask again
-- Linking a board on your own initiative — this skill has no confirmation surface,
-  so the caller owns the write and the yes
+- Stopping to ask the caller whether to add a discovered board when there's
+  exactly one and the issue isn't on it — that's the default case; link it
 - Picking one project when discovery returned several
 - Skipping a link because an auto-add workflow "probably" caught it — its scope is
   not visible from here, and adding is idempotent anyway
@@ -609,7 +787,14 @@ ladder. The rest mean: you are about to write something false into the record.**
 | "Summary says blocked_by 0, so nothing blocks it" | The counter is stale for ~1s after a write. Read the list endpoint. |
 | "Cross-repo dependencies must not be supported" | They are. You read a lagging counter. |
 | "`blockedByIssues` errored, so GraphQL can't do it" | Wrong field name. It's `blockedBy`. Introspect. |
-| "`options: []`, so the field isn't configured" | You queried the board mirror. The options exist. Read `issueFields`. |
+| "`options: []`, so the field isn't configured" | You queried the board mirror. The options exist. Read `issueFields` — and note the field is a mirror, so it takes `setIssueFieldValue`. |
+| "I added it to the board, so the board is done" | Membership sets no values. Every board-native field is still empty. |
+| "Board fields are just the project's copy of the issue fields" | Three kinds live there: mirrors, board-native, and read-only projections. Only board-native ones are written with `updateProjectV2ItemFieldValue`. |
+| "The mirror error means I lack permission on that field" | It means wrong mechanism. Write it on the issue with `setIssueFieldValue`. Retrying or escalating changes nothing. |
+| "Status is obviously Backlog for a new issue" | That's your workflow's policy, if it has one. Absent that, it's a guess — confirm it or report Status unset. |
+| "Estimate is a number, I'll put a sensible one" | A fabricated estimate is read as a real one by every capacity view on the board. |
+| "I'll link the board now and set Status later" | Later doesn't happen. Discover all four up front; set fields right after the add. |
+| "Adding to the board is automatic, so fields must be too" | Adding is idempotent and content-free, which is why it's automatic. Values are content and are not. |
 | "A human needs to add the missing options first" | Nothing is missing. You are about to send someone to 'fix' a correct field. |
 | "This field is the closest thing to the one I need" | Closest ≠ correct. It records a different field. Report the real one unset instead. |
 | "The mutation's input shape is undocumented" | Introspect `IssueFieldCreateOrUpdateInput`, or copy the working mutation above. |
@@ -635,9 +820,16 @@ ladder. The rest mean: you are about to write something false into the record.**
 | Which projects exist | `organization(login:){projectsV2}` at call time — never a remembered number |
 | Owner is a personal account | Projects live under `user(login:){projectsV2}` — **not** absent like Issue Fields |
 | Adding an issue to a board | Rung 1 absent; `gh project item-add --url`, else `addProjectV2ItemById` |
-| Issue not on the discovered board | **Report it to the caller.** Never link it yourself, never stay silent. |
-| Discovery returned several projects | List them all; never pick one |
+| Issue not on the discovered board | **Add it.** Don't stop to ask — discovery already answered the question. |
+| Discovery returned several projects | List them all; never pick one silently — ask which, or add to all if already told to |
 | An auto-add workflow might cover it | You can't see its scope. Link anyway — adding is idempotent. |
+| Which board fields exist | `projectV2.fields` at call time — ids are per-board, never reused |
+| Setting Status / Size / Estimate | `updateProjectV2ItemFieldValue`, or `gh project item-edit` — needs the **item** id |
+| Board field name also in `list_issue_fields` | It's a mirror — `setIssueFieldValue` on the issue, not the board mutation |
+| Board single-select shows `options: []` | Mirror confirmed. Board-native ones return real options. |
+| "Issue field values cannot be updated using…" | Wrong mechanism, not permissions. Switch to `setIssueFieldValue`. |
+| Just added an item to a board | Its fields are all empty. Set them or report them unset — the add wrote nothing. |
+| Board field value not established | Report it unset by name, alongside unset Issue Fields. Never invent a Status or Estimate. |
 | blocked-by / blocking | `gh issue edit`/`create` — URL form for cross-repo |
 | Sub-issue across repos | `--add-sub-issue <full-URL>` |
 | "Is this blocked?" | `dependencies/blocked_by` list, never the summary |
