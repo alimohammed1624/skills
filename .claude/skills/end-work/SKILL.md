@@ -15,6 +15,13 @@ reporting.
 
 **Announce at start:** "I'm using the end-work skill to wrap up your session."
 
+**Two entry points, one behaviour.** A developer wraps up, *or* start-work found a session 36h+ old
+that was never closed and invoked this skill to recover it (start-work → *Step 2.5*). **Nothing here
+changes between the two.** The cursor is the whole interface: you read `<org>.status.json`, find the
+session, and derive the window from `session.started_at` — which on a recovery run is simply further
+back than usual. Take no arguments, special-case nothing, and above all **never invoke start-work**:
+recovery runs one way only, and a skill that called back would loop.
+
 **READ *The Substrate* BELOW FIRST.** It holds the paths, bootstrap procedure, cursor schema, event
 format, and view-generation rules this skill depends on.
 
@@ -22,9 +29,14 @@ format, and view-generation rules this skill depends on.
 a three-rung ladder — MCP tool, then `gh` flag, then `gh api graphql` — and nothing is reported
 impossible until all three have been walked.
 
-**Write surfaces, per target-workflow §2:** the tracking clone and cursor files, plus issue
-comments, labels, state, and field values on issues the session touched. **Never an issue body,
-never a PR, never a product repo's file contents.**
+**Write surfaces, per target-workflow §2:** the tracking clone and cursor files; issue comments,
+labels, state, assignees, and field values on issues the session touched; and **new PRs over
+commits the developer already pushed**. **Never an issue body, never an existing PR, never a
+product repo's file contents.**
+
+**The PR surface is creation only.** Never merge, never review, never approve, never rewrite an
+open PR's body or title. A PR opened too early is caught by its reviewer; a merge is caught by
+nobody, and that difference is the whole licence for this write.
 
 ## The Iron Law
 
@@ -159,9 +171,10 @@ so the record is already out-of-band. **Never write exclusion lines into the chi
 |---|---|
 | `<base>/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The yes was given at the confirmation block, not at the push. |
 | `<base>/.claude/<org>.status.json` | Local cursor writes. No git involved. |
-| Issues the session touched | Comments, labels, state, and field values — this skill's documented job. |
+| Issues the session touched | Comments, labels, state, assignees, and field values — this skill's documented job. |
+| PRs in the session's repos | **Creation only**, over already-pushed commits, with the closing keyword in the body. Never merged, reviewed, approved, or rewritten. |
 
-**Never an issue body, never a PR, never a product repo's file contents.**
+**Never an issue body, never an existing PR, never a product repo's file contents.**
 
 ### Bootstrap & access — every run, in this order
 
@@ -221,9 +234,10 @@ is *not* a permission failure and must not be read as one.
 
 ```
 {org}/tracking
-├── README.md          ├── tracks.yml        └── views/          (generated)
-├── .gitattributes     └── timeline/             gantt.md
-                           YYYY-MM/<dev>.jsonl   dependencies.md
+├── README.md          ├── tracks.yml          └── views/          (generated)
+├── .gitattributes     ├── status-policy.yml       gantt.md
+                       └── timeline/               dependencies.md
+                           YYYY-MM/<dev>.jsonl
 ```
 
 **One branch, always** — never branched, force-pushed, squashed, or rebased. That linearity is what
@@ -285,6 +299,59 @@ call, not the definition.**
 form for cross-repo). **A dependency research *found* is not one a session *hit*:** discovered
 blockers go on the issue only; `blocked_by` events record what a session actually ran into.
 
+### Board `Status` — the transition policy
+
+**A card that never moves is worse than no card.** An item still reading `In Progress` after its PR
+merged tells everyone planning off that board something false, and unlike a missing field there is no
+blank to notice. Wrap-up is where most of a thread's real transitions happen, so this skill fires
+most of them.
+
+`Status` is a board-native single-select (gh-wrapper → *Projects v2 Item Fields*), and the Iron Law
+forbids guessing one. **A policy is what makes it not a guess.** `status-policy.yml` in the tracking
+repo maps this workflow's lifecycle moments to option names on one board:
+
+```yaml
+project: 2                  # the board number this policy governs
+field: Status               # the board-native field it drives
+transitions:
+  issue_created:  Backlog        # start-work
+  branch_created: In Progress    # start-work
+  resumed:        In Progress    # start-work
+  blocked:        Blocked        # end-work
+  unblocked:      In Progress    # end-work
+  pr_opened:      In Review      # end-work
+  handoff:        In Review      # end-work
+  done:           Done           # end-work
+```
+
+**end-work owns `blocked`, `unblocked`, `pr_opened`, `handoff`, and `done`.** The first three are
+start-work's, and neither skill fires the other's moments.
+
+| Situation | Rule |
+|---|---|
+| The file is **absent** | The policy is undefined. Render the transition `— ask`, with a suggestion built from the board's **actual** option list, and write the file once the developer says yes. A one-time cost, not a per-session question. |
+| A **key** is absent | **Leave `Status` alone at that moment.** Absent means "no transition here" — never "work it out". A board with no `Blocked` column is normal, not a gap to fill. |
+| A value names an option the board **no longer returns** | **Stale policy.** Report it by name, write nothing, and re-ask that one key. Never substitute a neighbouring option that happens to accept the write. |
+| Several boards carry the item | One policy per board — `project` keys it. A board with no policy gets no transition and one report line. |
+| The item is **already** at the target option | No-op. Don't write it, and don't report it as a change that happened. |
+| The item is on **no** board | Nothing to transition. Report it the way an unlinked issue is reported. |
+
+**The policy stores option names; the API takes option ids.** Resolve one to the other from *this
+run's* discovery (gh-wrapper → *Discover the board's fields at call time*) — a name that doesn't
+resolve is the stale-policy row, not a reason to guess an id.
+
+**A policy-derived transition is `derived`, not inferred.** The policy is a source, so the line
+renders `← status-policy.yml` and is covered by the single yes like every other line in the block —
+**with one exception, and it is the same exception closure already carries.** `done` moves a card to
+the column everyone reads as finished, so it rides the *named yes* that closing the issue requires,
+not the blanket one. A transition never happens silently: a `Status` that moves without appearing in
+the block is exactly the fabrication the Iron Law exists to prevent.
+
+**One transition per item per run.** A thread that got blocked at 11:00 and unblocked at 16:00 ends
+the day in progress, and writing both in sequence would record a state the board never needed to
+show. Fire the **last** moment the session reached, and let the timeline carry the intermediate
+events — that is what the timeline is for.
+
 ### Established vs. guessed
 
 A value is **established** when it has a **source**, the source is **shown to the developer** beside
@@ -300,6 +367,7 @@ Create the month directory if this is the month's first event.
 ```jsonl
 {"schema":1,"ts":"2026-07-25T13:40:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"progress","track":"payments-v2","thread":"msa1624/api#41","repo":"msa1624/api","branch":"feat/api-41-checkout","commits":["a1b2c3d","e4f5a6b"],"note":"idempotency keys on charge endpoint"}
 {"schema":1,"ts":"2026-07-25T15:10:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"blocked","track":"payments-v2","thread":"msa1624/api#41","repo":"msa1624/api","branch":"feat/api-41-checkout","blocked_by":["msa1624/platform#12"],"note":"needs the new rate-limit middleware"}
+{"schema":1,"ts":"2026-07-25T17:55:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"pr_opened","track":"payments-v2","thread":"msa1624/api#41","repo":"msa1624/api","branch":"feat/api-41-checkout","pr":"msa1624/api#52","draft":true,"linked":true}
 {"schema":1,"ts":"2026-07-25T18:20:00Z","session":"2026-07-25-ali-01","dev":"ali","event":"session_end","threads_touched":1,"repos_touched":1}
 ```
 
@@ -309,12 +377,15 @@ Create the month directory if this is the month's first event.
 | `ts` | UTC, ISO 8601, always — local time makes cross-timezone charts lie |
 | `session` | the id shared by every event in one sitting |
 | `dev` | the GitHub handle the work is attributed to |
-| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `session_end` |
+| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `pr_opened` · `session_end` |
 | `track` · `thread` · `repo` · `branch` | thread-scoped events only. `thread` is always `owner/repo#N`, never bare `#N` |
 | `commits` | short SHAs, so an entry can be checked against git rather than trusted |
 | `note` | one line: what actually happened. Expected on `progress` and `blocked` |
 | `blocked_by` | array of `owner/repo#N` — a dependency **hit while working** |
 | `to` | `handoff` only: the handle the work passes to |
+| `pr` | `pr_opened` only: the PR as `owner/repo#N`. Never a bare `#N`, and never a URL |
+| `draft` | `pr_opened` only: `true` when work remained, `false` when the thread was complete |
+| `linked` | `pr_opened` only: `true` when the closing keyword actually created the relationship, `false` when the base branch made it inert. **Recorded because it cannot be re-derived** — a later reader cannot tell a PR that never linked from one whose issue was closed by hand |
 | `threads_touched` / `repos_touched` | `session_end` only: counts, so a session's shape reads without replaying it |
 | `inferred` | `true` only on a synthetic `session_end` for an abandoned session |
 
@@ -434,9 +505,12 @@ sequenceDiagram
     Note over S,G: compliance · session brief · dependencies (compare)<br/>+ field discovery, run by the skill
     S->>S: return gate on every payload
     S->>D: ONE block: everything proposed, each line with its source
-    Note over S,D: a bare yes covers the reversible writes.<br/>CLOSURES must be named separately.
+    Note over S,D: a bare yes covers everything incl. opening PRs.<br/>CLOSURES must be named separately.
     D->>S: yes (and any closures, named)
-    S->>G: comments, labels, fields, dependency links — then closures
+    S->>G: comments, labels, fields, assignees, dependency links
+    S->>G: open PRs over pushed work, link + board them
+    Note over S,G: closing keyword is INERT off the default branch —<br/>check the base, record linked:true|false
+    S->>G: then closures, only if named
     S->>T: append events to this month's dev file
     S->>T: regenerate views/gantt.md + views/dependencies.md
     S->>T: show the diff and push, same step — no second yes
@@ -452,7 +526,14 @@ Derive the org. Read `<base>/.claude/<org>.status.json`.
 | What you find | What you do |
 |---|---|
 | A live `session` | Its `started_at` is the window; `threads[]` seeds the worktree set below. |
+| A `session` **36h or older** | Same thing — a recovery run, whether start-work handed off or the developer got here themselves. The long window is the point; do not shorten it. |
 | No `session` | **First rule out the wrong base** (see below). Then: no session was opened. Say so, use midnight today as the window, and derive the worktree set from the fallback below. Still write `last_session` at the end. |
+
+**The midnight-today fallback is a floor, not a window anyone chose.** It is why start-work sweeps
+an abandoned session *before* clearing the cursor: once `session` is gone, the `started_at` that
+would have framed that work is gone with it, and this run silently scopes to today instead. If you
+reach this row and the repos show commits older than today that no event covers, say so rather than
+reporting a clean window.
 
 **"No session" and "not this base" look identical, and only one of them is true.** The cursor is
 per working directory, so running end-work somewhere other than where start-work ran finds an
@@ -573,10 +654,14 @@ list_issue_fields(owner: "{org}")   → this run's field set. Pass it into the b
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue, any
-GraphQL mutation, or gh issue edit/create/close/comment. If something seems to need
-one, return it in asks[] — never as an action. You CAN call these tools; not calling
-them is the rule you are being held to.
+NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
+create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
+never as an action. You CAN call these tools; not calling them is the rule you are
+being held to.
+The calling skill opens PRs itself, in the main conversation, after the developer
+accepts the block. Its having that surface widens NOTHING here: an agent that thinks
+a PR should exist says so in asks[] and never opens one.
 DO NOT read the timeline, status.json, or tracks.yml. Everything you must compare
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 destroys the comparison.
@@ -617,8 +702,12 @@ covered/not_covered are MANDATORY.
 >
 > **`proposed_action` is a closed enum: `add_issue_comment` · `append_progress_event` ·
 > `append_blocked_event` · `update_field` · `ask_user_whether_done`. There is no `close_issue`
-> value.** A closing keyword on a still-open issue can only ever produce `ask_user_whether_done` —
-> closing keywords state *intent*, not completion.
+> value, no `open_pr` value, and no board-`Status` value.** A closing keyword on a still-open issue
+> can only ever produce `ask_user_whether_done` — closing keywords state *intent*, not completion.
+> Whether a PR opens is decided in Step 5.5 from four checkable preconditions, not from an agent's
+> read of whether the work looks finished. **Board transitions are derived from the policy and the
+> moments this run actually reached**, never proposed by an agent reading commits — an agent that
+> could nominate a `Status` would be guessing one, one layer removed.
 >
 > **Report the author, not the committer** (they differ after rebases, merges, admin pushes), and
 > honour `Co-authored-by:`. `track` is always `null` in a proposed event — you don't read
@@ -657,7 +746,7 @@ compliance pass did not run" is a printed line rather than an omitted section.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)` | **Discard the whole payload** and say a read-only agent attempted a write. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and say a read-only agent attempted a write. |
 | **SHA** — every SHA bound for a `commits` array survives `git -C <worktree> cat-file -e <sha>^{commit}` | Append the event **without** `commits`. It renders `(unverified)`, which is the honest outcome. **Never `git fetch` to make a fabricated SHA real.** |
 | **Discovery** — every proposed field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. `data: null` with an `errors` block at HTTP 200 is a permissions or transient failure, **not** a hallucination. |
@@ -701,6 +790,20 @@ Update labels *before* closing, so the next scan reads the right state. Shift th
 field — `Target date` in this org — only when the developer said the timeline moved, **never to make
 a date look met.**
 
+**Closing the issue does not move the board.** GitHub moves a closed item to the done column only if
+that board has the built-in workflow enabled, and **you cannot read from here whether it does** —
+the same unreadable scope that makes auto-add unreliable. So a thread that closes gets the policy's
+`done` transition written explicitly, in the same breath, on the same named yes:
+
+```bash
+gh project item-edit --id <item-id> --project-id <project-id> \
+                     --field-id <status-field-id> --single-select-option-id <done-option-id>
+```
+
+If the transition is already there because the board's own workflow beat you to it, that is the
+already-at-target no-op — say nothing. Closing an issue and leaving its card in `In Progress` is
+the drift this section exists to stop.
+
 **Every proposed comment carries its provenance**, the way start-work puts it in the issue body.
 end-work must not rewrite bodies, so the source lines go in the comment it is already posting.
 
@@ -708,16 +811,112 @@ end-work must not rewrite bodies, so the source lines go in the comment it is al
 `gh api graphql` before reporting anything unset, and name what you tried. If a role has no field in
 this org, say so rather than writing the nearest field that accepts the value.
 
-**Dependencies discovered during the session.** The timeline's `blocked_by` is the authoritative
-record **by design, not because the write is unavailable** — see *The Substrate* → Issue Fields in this
-Org. The Relationship itself is writable at rung 2:
+**Dependencies hit during the session.** The timeline's `blocked_by` is the authoritative record
+**by design, not because the write is unavailable** — see *The Substrate* → Issue Fields in this Org.
+The Relationship itself is writable at rung 2:
 
 ```bash
 gh issue edit <N> --add-blocked-by <number-or-full-URL>   # URL form crosses repos
 ```
 
-Offer that write when the developer wants the dependency visible on the issue too. Appending the
-`blocked_by` event is not optional either way.
+**Write it. Do not offer it.** Once a `blocked_by` event is going into the timeline, the fact is
+already established and already consented to at the block — making the developer separately opt in
+to mirroring it onto the issue is a question with one sensible answer, which is the cognitive load
+this skill exists to remove. It renders as a line in the block like every other write. Appending the
+event is not optional either way.
+
+The same applies in reverse to `unblocked`: drop the relationship with `--remove-blocked-by` when
+the session cleared it.
+
+**And the board follows both**, if the policy defines them: `blocked` → the policy's blocked option,
+`unblocked` → its in-progress one. Many boards have no blocked column at all, and an absent key
+there means the card simply stays put — the timeline and the issue's Relationship still carry the
+fact. Remember the one-transition-per-run rule: a thread blocked and then unblocked in the same
+session fires `unblocked` only.
+
+**Handoffs.** A `handoff` event names a recipient in `to`. **Reassign the issue to them in the same
+step** — a timeline that says the work passed to @ali while the issue still shows the sender is the
+exact drift this skill is supposed to prevent, and it is invisible to anyone reading only GitHub.
+
+```
+issue_write(method: "update", owner, repo, issue_number, assignees: ["<to>"])
+```
+
+The board gets the policy's `handoff` transition alongside the reassignment, for the same reason:
+a card whose assignee changed but whose column didn't is half a handoff. Boards that don't
+distinguish a handoff column leave the key out and the card stays where it is.
+
+If the recipient cannot be assigned — not a collaborator, or the write fails after rungs 2–3 — say
+so plainly and leave the event alone. The timeline records what happened; a failed reassignment
+does not change that it happened. **The `Status` transition is judged separately** — one write
+failing is not evidence about the other, and reporting them as one outcome hides which surface
+actually drifted.
+
+### Step 5.5: Propose the PR
+
+**A thread whose work is pushed and has no open PR gets one.** The record is worthless if it says
+the work landed and nobody can review it, and making the developer open it by hand is exactly the
+load this skill removes. Like every other write here, it is proposed in the block and covered by the
+single yes — **there is no second gate.**
+
+**The base is the repo's default branch unless the developer named another one** — read it, never
+assume `main`:
+
+```bash
+gh repo view <owner>/<repo> --json defaultBranchRef --jq .defaultBranchRef.name
+```
+
+That default is not a convenience: it is the one base on which the closing keyword works at all.
+A developer who names a different base gets the PR they asked for **and** an unlinked-issue line in
+the block, so the trade is visible before they accept it rather than discovered after the merge.
+
+**Four preconditions, all checkable — no judgment call, no question:**
+
+| Check | How | If it fails |
+|---|---|---|
+| The branch has commits the base does not | `git -C <worktree> log --oneline origin/<base>..HEAD` | Nothing to propose. Skip silently. |
+| Everything on the branch is **pushed** | already computed by the iron law, Step 3 | **Do not open it.** A PR over a branch with unpushed commits does not contain the work. Report it as not opened, naming the unpushed commits. |
+| No PR is already open for this head | `list_pull_requests(owner, repo, head: "<branch>", state: "open")` | Nothing to do. Say it's already open, with its ref. |
+| The thread has an issue to link | `session.threads[].thread` | Open it anyway; report it unlinked. |
+
+**Draft or ready is derived, not asked.** You already computed the answer for the Carry-over section:
+
+| Carry-over for this thread | PR opens | Keyword in the body |
+|---|---|---|
+| Remaining work listed | **draft** | `Refs owner/repo#N` — no auto-close |
+| Nothing remaining | **ready for review** | `Closes owner/repo#N` |
+
+`Closes` on a ready PR is not a closure this skill is making — the merge is, and a human does that
+with the keyword in front of them. That is why it does not need the named yes a direct closure does.
+
+**Check the base branch before trusting the keyword.** gh-wrapper owns the mechanics and the trap:
+a closing keyword is *silently ignored* unless the PR targets the repo's default branch. Read
+`defaultBranchRef`, never assume `main`. Off the default branch the keyword is inert — keep the
+plain reference, say so in the block and the report, and record `linked: false` on the event.
+
+**Use the full `owner/repo#N` form in the keyword always**, matching this skill's reference rule
+everywhere else. It is the only form that works when the PR and its issue live in different repos,
+which is normal in layout P.
+
+**The body carries provenance**, the same way this skill's issue comments do — what the session did,
+which commits, and what remains. Check `.github/pull_request_template.md` first and fill it in
+rather than replacing it.
+
+Then, because none of these follow from the create:
+
+1. **Add the PR to the board** if one was discovered — `gh project item-add --url <pr-url>`. PRs go
+   missing off a board exactly the way issues do, and adding is idempotent.
+2. **Move the issue's card** with the policy's `pr_opened` transition. This is the moment the board
+   is most often wrong: the work is up for review, and the column still says someone is writing it.
+   The transition applies to **the issue's item**, not the PR's — the issue is what the board plans
+   around, and the PR item is a mirror of it.
+3. **Comment on the issue** with the PR ref, and say plainly if the keyword did not link.
+4. **Append `pr_opened`**, carrying `pr`, `draft`, and `linked`.
+
+**A draft PR still fires `pr_opened`.** Draft means there is carry-over, not that nothing happened —
+and the board's reviewers are exactly who needs to see it arrive. If a board distinguishes the two
+states it does so with its own columns, which is a policy question, not one to resolve by guessing
+here.
 
 ### Step 6: Reconcile Push Activity — the Compliance Pass
 
@@ -767,19 +966,50 @@ Note: ~/work/platform is in the session but no longer exists on disk.
                                                          window on this branch
   blocked    web#22   blocked_by [msa1624/api#43]      ← you said 14:40 "UI needs
                                                          the refund endpoint shape"
+  pr_opened  web#22   msa1624/web#61, draft, linked    ← see below
   session_end  3 threads, 3 repos
 
 ### To GitHub
   api#43       comment: "state machine done; idempotency
                and tests remain"                        ← from 9f2c1ab
-  web#22       add-blocked-by api#43                    ← the blocker above, not
-                                                          yet on the issue
+  web#22       add-blocked-by api#43                    ← the blocker above; goes on
+                                                          the issue as well as the
+                                                          timeline
   platform#12  label ship-ready                         ← PR #19 merged 16:12
+  api#48       reassign to @ali                         ← the handoff below; the
+                                                          issue still shows you
+
+### To the board — payments-board (#2)
+  web#22    Status  In Progress → In Review   ← status-policy.yml: pr_opened.
+                                                web#61 opens below; the add does
+                                                not move the card
+  api#48    Status  In Progress → In Review   ← status-policy.yml: handoff
+  web#22    blocked → no move                 ← the board has no Blocked option
+                                                and the policy has no key for it;
+                                                the timeline still records it
+  api#43    Status  already In Progress       ← no change
+
+  platform#12 is in the closing section below; its Status moves on that yes, not
+  this one.
+
+### Opening a PR
+  msa1624/web#61  payment UI — DRAFT                    ← 4 commits pushed on
+                  feat/web-22-payment-ui, and carry-over lists remaining work,
+                  so it opens as a draft
+                  Body: "Refs msa1624/web#22"           ← draft, so no auto-close
+                  Base: main = default branch, so the reference links
+                  Also added to payments-board (#2)     ← PRs go missing off a
+                                                          board like issues do
+
+  Not opened: api#43 — 9f2c1ab is unpushed, so a PR would not contain the work.
 
 ### Closing — needs its own yes, naming them
   platform#12  rate limiter → closed/completed
                ← PR #19 merged 16:12; exit criteria "all endpoints behind rate
                  limiter" met by 3a1f, b92c; no open sub-issues
+               Status In Review → Done  ← status-policy.yml: done. Closing the
+                 issue does not move the card unless the board's own workflow is
+                 enabled, and that isn't readable from here.
 
 ### Compliance gaps found
 - 9f2c1ab referenced #43 with no timeline event — the progress event above repairs it
@@ -787,20 +1017,30 @@ Note: ~/work/platform is in the session but no longer exists on disk.
 Researched: 3 worktrees, 11 commits, live state on 5 issues and 3 PRs, 22 timeline
 events. 0 writes so far.
 
-→ Yes records the timeline, the comments, the labels, the fields, and the dependency,
-  then pushes. It does NOT close platform#12 — say "yes, close 12" for that.
+→ Yes records the timeline, the comments, the labels, the fields, the dependency, the
+  reassignment, the board moves above, and opens web#61 as a draft, then pushes. It
+  does NOT close platform#12 or move its card to Done — say "yes, close 12" for that.
 ```
 
 #### Two consent levels, and why
 
-**A bare "yes" confirms every reversible write in the block. It never confirms a closure.**
+**A bare "yes" confirms every other write in the block — comments, labels, fields, assignees,
+dependency links, board `Status` moves, appends, and opening a PR. It never confirms a closure,
+and the `done` transition rides with the closure rather than with the bare yes** — moving a card
+to the done column is the same claim as closing the issue, made on the surface more people read.
 
 Closures are confirmed only by a reply that names them, or that names closing explicitly. A closure
 the developer did not name is reported as *proposed, not closed*, and re-proposed next run.
 
-The reason: every other write here is a comment, a label, a field value, or an append — visible,
-correctable, additive. **A closure is the one write that changes what other people believe is
-finished**, and it is the one nobody watches you make. `Fixes #N` states intent, not completion.
+**The line is not reversibility — it is who catches the mistake.** A PR opened too early is caught
+by its reviewer, and rejecting it is the mechanism working as designed. A comment, a label, a field,
+or an assignee is visible and correctable. **A closure is the one write nobody watches you make**,
+and it changes what everyone downstream believes is finished. `Fixes #N` states intent, not
+completion.
+
+**Do not add a third gate.** A second confirmation on the PR would be a gate on a decision already
+made at this block, and the cost of that is that people stop reading the first one — the same
+reasoning that puts the push behind the same yes. Show it, source it, then do it.
 
 Silence is not a yes. A reply about something else is not a yes.
 
@@ -829,7 +1069,9 @@ of the month. Append semantics are **_The Substrate_ → Event timeline**:
   a design choice about what the timeline is for, **not** a consequence of the Relationship being
   unwritable; Step 5 covers writing it on the issue as well.
 - `done` for threads that finished. Check the work is actually complete first.
-- `handoff`, with `to` set to the handle, when work is being passed on.
+- `handoff`, with `to` set to the handle, when work is being passed on — and reassign the issue.
+- `pr_opened` for each PR this run opened, carrying `pr`, `draft`, and `linked`. **Write it after
+  the PR exists, with the ref GitHub returned** — never a predicted number.
 - `session_end`, last, with `threads_touched` and `repos_touched`.
 
 Field rules, event by event, are in **_The Substrate_ → Event timeline**.
@@ -842,6 +1084,11 @@ softer in the views, which is the correct outcome — not a reason to pad it.
 
 Rebuild `views/gantt.md` and `views/dependencies.md` from `tracks.yml` and the **whole** timeline —
 never from GitHub. Rules in **_The Substrate_ → Generated views**.
+
+**`status-policy.yml` rides this commit** if the block asked for a policy and got one — it is
+tracking-repo state like `tracks.yml`, not a cursor, and it is the one thing here that is authored
+rather than generated. Never regenerate it from the board's option list; that would turn whatever
+the board currently has into a policy nobody agreed to.
 
 **Show the diff and push in the same step. Do not wait for a second yes.** The developer's yes was
 given at the block in Step 6.5, and asking again is a gate on a decision already made — the cost of
@@ -895,9 +1142,28 @@ Note: the tracking clone had uncommitted changes from a previous run — resolve
 - progress · payments-v2 · msa1624/api#43 · feat/api-43-refunds · 9f2c1ab — refund state machine
 - blocked · payments-v2 · msa1624/web#22 — blocked by msa1624/api#43, "UI needs the refund endpoint shape settled"
 - done · auth-hardening · msa1624/platform#12 — rate limiter shipped
+- pr_opened · payments-v2 · msa1624/web#22 — msa1624/web#61, draft, linked
 - session_end · 3 threads, 3 repos
 
 Views regenerated. Pushed to msa1624/tracking as 4a91c07.
+
+### PRs opened
+| PR | Thread | Kind | Linked | On board |
+|---|---|---|---|---|
+| msa1624/web#61 | msa1624/web#22 | draft | yes — `Refs msa1624/web#22` | payments-board |
+
+Not opened: msa1624/api#43 — 9f2c1ab is still unpushed, so a PR would not contain the work.
+
+### Board — payments-board (#2)
+| Thread | Status | Moment |
+|---|---|---|
+| msa1624/web#22 | In Progress → In Review | pr_opened |
+| msa1624/api#48 | In Progress → In Review | handoff |
+| msa1624/platform#12 | In Review → Done | done |
+| msa1624/api#43 | In Progress (no change) | — |
+
+Not moved: msa1624/web#22's `blocked` — the policy defines no key for it, so the card stayed put.
+The timeline still records the blocker.
 
 ### Completed
 | Thread | Repo | Title | Status |
@@ -950,7 +1216,31 @@ Omit the Pending Changes section entirely when Step 3 comes back clean.
 - Delegating the iron law to a subagent
 - Passing an agent's prose into the report instead of re-rendering its rows
 - Reporting a field unsettable after one failed attempt, without walking rungs 2–3
-- Rewriting an issue body, or writing to a PR
+- Rewriting an issue body, or merging, reviewing, approving, or rewriting a PR — creation is the
+  whole surface
+- Opening a PR over a branch with unpushed commits, so the PR does not contain the work
+- Opening a second PR for a head that already has one open
+- Putting a closing keyword in a PR body without reading `defaultBranchRef` — off the default
+  branch it is inert and the sidebar is silently empty
+- Reporting a PR as linked when the base made the keyword inert, or omitting `linked` from the event
+- `Closes` on a draft PR — a draft says work remains, and the keyword says it doesn't
+- Opening the PR and stopping — the board add, the `Status` move, the issue comment, and
+  `pr_opened` do not follow from the create
+- Closing an issue and leaving its card in the in-progress column, on the assumption that the
+  board's built-in workflow caught it — that scope is not readable from here
+- Moving a card to the done column on the bare yes, instead of on the named closing yes
+- Moving a `Status` without a policy key behind it, or without the line appearing in the block
+- Writing both `blocked` and `unblocked` transitions for one session, recording a state the board
+  never needed to show
+- Substituting a neighbouring option when the policy names one the board no longer has
+- Inventing a policy option name instead of asking and writing `status-policy.yml`
+- Regenerating `status-policy.yml` from the board's current options — that is a policy nobody agreed to
+- Firing start-work's moments — `issue_created`, `branch_created`, `resumed` — from here
+- Reporting the reassignment and the `handoff` transition as one outcome, hiding which one drifted
+- Writing a `pr_opened` event with a predicted PR number instead of the ref GitHub returned
+- Asking for a second yes before opening a PR the block already proposed
+- Recording a `handoff` and leaving the issue assigned to the sender
+- Offering to mirror a `blocked_by` onto the issue instead of just writing it
 - Uncommitted changes found and put anywhere but the top of the report
 - Describing unpushed commits as "minor" or "just local"
 - The tracking clone's dirtiness folded into the developer's blocker section
@@ -985,9 +1275,26 @@ something false into the record, or into a surface that isn't yours to write.**
 | Pending changes exist | Top-of-report BLOCKING section, grouped by repo, with an action-required line |
 | Tracking clone dirty | Separate report line, never the developer's blocker |
 | Window | `session.started_at`. No session → midnight today, and say so. |
+| Invoked by start-work's recovery | Nothing changes. Read the cursor, take the long window, render the block as always |
+| Reached the end of a recovery run | Step 9 clears `session` as usual — start-work re-reads it and carries on |
 | Item made progress but isn't done | `add_issue_comment` + labels + a `progress` event |
-| Item is genuinely done | `issue_write` closed/completed **and** a `done` event |
-| Dependency hit while working | A `blocked` event with `blocked_by: ["owner/repo#N"]` — the only source the dependency view has. Offer `gh issue edit --add-blocked-by` too. |
+| Item is genuinely done | `issue_write` closed/completed **and** a `done` event **and** the policy's `done` transition — closing moves no card |
+| Which `Status` to set | `status-policy.yml` in the tracking repo. This skill fires `blocked`, `unblocked`, `pr_opened`, `handoff`, `done` — never start-work's moments. |
+| Two board moments in one session | Fire the **last** one reached. The timeline carries the intermediate events. |
+| No `status-policy.yml` | Render `— ask` with the board's real options, then write the file into the same commit as the events |
+| Policy names an option the board lost | Report it by name and re-ask that key. Never substitute. |
+| Policy has no key for this moment | Leave `Status` alone. Absent means no transition, not "work it out". |
+| Item already at the target option | No-op. Don't write it, don't report it as a change. |
+| Which yes covers a `Status` move | The bare yes — **except `done`**, which rides the named closing yes |
+| Dependency hit while working | A `blocked` event with `blocked_by: ["owner/repo#N"]` — the only source the dependency view has. **Also** `gh issue edit --add-blocked-by`, written, not offered, **and** the policy's `blocked` transition if it defines one |
+| Session cleared a dependency | An `unblocked` event **and** `--remove-blocked-by` on the issue **and** the policy's `unblocked` transition |
+| Work handed to someone | A `handoff` event with `to`, reassign the issue to them, **and** the policy's `handoff` transition |
+| Thread's work is pushed, no PR open | Open one. Draft + `Refs` if carry-over lists remaining work, ready + `Closes` if not |
+| Branch has unpushed commits | **Don't open a PR.** It wouldn't contain the work. Report it not opened |
+| Before writing a closing keyword | `gh repo view --json defaultBranchRef` — off it the keyword does nothing |
+| PR base isn't the default branch | Keep the plain ref, report unlinked, record `linked: false` |
+| Just opened a PR | Board it, move the issue's `Status`, comment on the issue, append `pr_opened` — none of that follows from the create |
+| Which item a `pr_opened` move applies to | **The issue's** item. The PR's item mirrors it; the board plans around the issue. |
 | Which fields to update | **This run's `list_issue_fields` result** — never a remembered name |
 | Research | Four agents in parallel, after the iron law, before the block |
 | An agent payload | Return gate before rendering or writing |
@@ -1023,7 +1330,24 @@ something false into the record, or into a surface that isn't yours to write.**
 | "No push access, but I'll write the events locally so nothing is lost" | Events nobody will see are already lost. Stop and say so. |
 | "The views conflict is two lines, I'll just merge them by hand" | The result is neither developer's output. Views are derived — discard and regenerate. |
 | "The commit said `Fixes #N`, so close it" | Closing keywords state intent, not completion. Verify first, then get it named. |
-| "They confirmed the block, so the closures are confirmed" | A block-level yes covers the reversible writes — comments, labels, fields, appends. A closure changes what everyone else believes is finished, and it's the one write nobody watches you make. Name the issues; get a yes for them. |
+| "They confirmed the block, so the closures are confirmed" | A block-level yes covers the rest — comments, labels, fields, assignees, board moves, appends, opening a PR. A closure changes what everyone else believes is finished, and it's the one write nobody watches you make. Name the issues; get a yes for them. |
+| "I closed the issue, GitHub moves the card to Done" | Only if that board has the built-in workflow enabled, and you cannot read that from here — the same blind spot that makes auto-add unreliable. Write the transition; it's a no-op if the board beat you to it. |
+| "The card says In Progress and the PR is up — close enough, someone will move it" | Nobody moves it. That is the whole reason this section exists: the column is the thing people plan off, and it's the thing nothing forces you to update. |
+| "The board has no Blocked column, I'll park it in On Hold" | A different option means a different thing to whoever built the board. An absent key means leave the card alone — the timeline still records the blocker. |
+| "It got blocked and then unblocked, I'll write both so the history is complete" | The board is state, not history. Two writes record a column the board never needed to show. Fire the last moment; the timeline is where the history lives. |
+| "The policy says In Review, the board now calls it Review — same thing" | Then someone renamed it deliberately, and the policy is stale. Report the key and re-ask it; substituting is exactly what the Iron Law forbids. |
+| "There's no policy file, I'll use the obvious mapping this once" | "This once" becomes the mapping nobody agreed to, written into a board other people plan from. Ask once, write the file, and it's answered forever. |
+| "The reassignment failed, so I'll report the handoff as not done" | Two writes, two outcomes. Say which one landed. Collapsing them hides whether the board or the issue is the surface that drifted. |
+| "Opening a PR is a big deal, I'll confirm it separately" | It's in the block with its source, and the developer said yes to the block. A second gate on a settled decision teaches people to skim the first one — the same reason the push doesn't wait either. |
+| "The work looks done, I'll open it ready for review" | "Looks done" isn't the input. Carry-over is: remaining work → draft, nothing remaining → ready. You already computed it for the report. |
+| "`Closes #43` in a draft PR is fine, it only fires on merge" | A draft says work remains and the keyword says it doesn't. Use `Refs` until it's ready. |
+| "The base is `main`, so the keyword works" | Usually, not always — and when it isn't the default branch GitHub ignores the keyword entirely and the body still renders perfectly. One `--json defaultBranchRef` call. |
+| "The keyword didn't link, but the PR mentions the issue, close enough" | A mention is a backlink, not a linked issue. The issue won't close on merge and nothing on either item shows it. Say it's unlinked and record `linked: false`. |
+| "Same repo, so a bare `#43` in the keyword is fine" | Every other reference in this skill is `owner/repo#N` for the same reason. Cross-repo threads are normal in layout P. |
+| "There are unpushed commits, but I'll open the PR so it's ready" | The PR wouldn't contain the work, and it would look like it did. That's the iron law's whole point. Report it not opened. |
+| "I opened the PR, the board picks it up from the issue" | It doesn't. A PR is its own board item, missing the same silent way an issue is. |
+| "They said they're handing this to @ali, the timeline records it" | And GitHub still shows it assigned to them. Someone reading the issue — which is most people — sees the wrong owner. Reassign it. |
+| "I'll ask whether they want the blocker on the issue too" | The `blocked_by` event is already going in and they already said yes to the block. That question has one sensible answer, which makes it load, not consent. |
 | "Asking again before the push is safer" | It's a second gate on a decision already made, and the cost is that people stop reading the first one. Show the diff, then push. |
 | "The research agent said the state machine is done" | Then it can name the commits. An agent's summary with no SHAs behind it is the same fabricated note as one you wrote yourself. |
 | "The agent already discovered the fields" | You pass the discovery down; you don't take four agents' word for four schemas. Compare every proposed write against the one result. |

@@ -76,16 +76,33 @@ operations can reach it. The two are split by **who owns the write**:
 creates lands inside a repo you work in, so none of it appears in a product repo's `git status` and
 no product repo needs a `.gitignore` entry for any of it.
 
-**Write surfaces.** These skills write in exactly four places, and nowhere else:
+**Write surfaces.** These skills write in exactly five places, and nowhere else:
 
 | Location | Writes permitted |
 |---|---|
 | `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The developer's yes is given at the confirmation block (§8.1, §8.2), not again at the push: showing the diff is a *disclosure* requirement, and waiting on it is a second gate on a decision already made. |
 | `~/.claude/<org>.{status,snapshot}.json` | Local cursor writes. No git involved. |
 | Product repos | Branch creation and checkout, by start-work only (§8.1). No file contents modified, nothing committed, nothing pushed. |
-| Issues in product repos | Creation and field-setting by start-work (§8.1); status reconciliation by end-work (§8.2). Issue *bodies* are not rewritten and PRs are never written. |
+| Issues in product repos | Creation and field-setting by start-work (§8.1); status reconciliation by end-work (§8.2). Issue *bodies* are not rewritten. |
+| Projects v2 board items | Membership added by both workday skills, and `Status` moved per `status-policy.yml` (§3). No other board field is written without an established value. |
+| PRs in product repos | **Creation only, by end-work only (§8.2)**, over commits the developer already pushed. Never merged, never reviewed, never approved; an existing PR's body and title are not rewritten. |
 
-Everything else — PRs, issue bodies, other people's repos — is read-only.
+Everything else — existing PRs, issue bodies, other people's repos — is read-only.
+
+**Why PRs are a write surface at all, and why only this much.** The record is
+worthless if it says the work landed and no one can review it, and asking the
+developer to open the PR by hand is the cognitive load these skills exist to
+remove. But the surface stops at *creation*: a PR is a proposal, and every
+judgment about it — approve, request changes, merge — belongs to a human. The
+distinction that licenses the write is **who catches the mistake**. A PR opened
+too early is caught by its reviewer, which is the mechanism working as designed.
+A merge or an approval is caught by nobody.
+
+**Creating the PR is not linking it.** The closing keyword in the body is what
+creates GitHub's linked-issue relationship, and it is *silently ignored* unless
+the PR targets the repo's default branch — see the gh-wrapper skill, which owns
+the mechanics. A PR whose base makes the keyword inert is reported unlinked, never
+described as linked.
 
 ```mermaid
 flowchart TB
@@ -115,7 +132,7 @@ flowchart TB
     SW -.-> GH
     EW[end-work] --> STATUS
     EW ==>|append events, regenerate views,<br/>commit + push| CLONE
-    EW -.->|update statuses| GH
+    EW -.->|update issues, open PRs| GH
     PS["/snapshot"] --> SNAP
     PS -.->|pulls, never authors| CLONE
     PS -.->|read-only| GH
@@ -144,6 +161,50 @@ three repos and three branches still writes to one file.
 **Branch names carry the thread number**, in the form `<type>/<repo>-<issue#>-<slug>` — e.g.
 `feat/api-41-checkout`. start-work generates every branch it creates this way (§8.1), so the
 branch→thread link is recoverable from the branch name alone, with no lookup table to maintain.
+
+### `status-policy.yml` — the board transition policy
+
+The repo holds one authored file besides `tracks.yml`. It maps this workflow's lifecycle moments to
+option names on a Projects v2 board's `Status` field:
+
+```yaml
+project: 2                  # the board this policy governs
+field: Status
+transitions:
+  issue_created:  Backlog        # start-work
+  branch_created: In Progress    # start-work
+  resumed:        In Progress    # start-work
+  blocked:        Blocked        # end-work
+  unblocked:      In Progress    # end-work
+  pr_opened:      In Review      # end-work
+  handoff:        In Review      # end-work
+  done:           Done           # end-work
+```
+
+**Why it exists.** Board membership is a link, and §8.1 adds it automatically because adding is
+idempotent and content-free. A `Status` value is *content* — principle-wise it is exactly the kind
+of thing the "never guessed" rule protects, and "new issues start in Backlog" is a convention no
+board states anywhere readable. Without a written policy the only correct behaviour is to report
+`Status` unset, which is what leaves a card sitting in `Backlog` while its branch has been open for
+a week.
+
+**A written policy is a source.** With one, a transition is *derived* — it renders in the
+confirmation block cited to the policy, and rides the same single yes as every other line. This is
+the one field the workflow drives on its own, and it is legal only because the mapping was agreed
+to once rather than inferred each time.
+
+| Rule | |
+|---|---|
+| File absent | The policy is undefined. The block renders the transition `— ask`, with a suggestion built from the board's **actual** options, and the file is written on the yes. **Never seeded at bootstrap** — an empty `transitions: {}` reads as "leave everything alone" and would silently make the mechanism inert. |
+| Key absent | No transition at that moment. Boards with no `Blocked` column are normal. |
+| Value no longer an option on the board | Stale policy: report by name, re-ask that key, never substitute a neighbour. |
+| Item already at the target | No-op, and not reported as a change. |
+| Two moments in one session | Fire the last one reached. The board is state; the timeline carries the history. |
+
+Option **names** are stored because a human reads and edits them; option **ids** are what the API
+takes, and are resolved from that run's field discovery. `done` is the one transition that rides
+the *named* closing yes rather than the blanket one — moving a card to the done column makes the
+same claim as closing the issue, on the surface more people read.
 
 ### Worktrees
 
@@ -334,7 +395,7 @@ resolves appended lines automatically.
 | `ts` | UTC, ISO 8601, always — local time makes cross-timezone charts lie |
 | `session` | the session id shared by every event in one sitting. This is what stitches a session together when it fans out across tracks, branches, and repos (§12) |
 | `dev` | the GitHub handle of the person the work is attributed to |
-| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `session_end` |
+| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `pr_opened` · `session_end` |
 | `track` | the `tracks.yml` id this work belongs to. Thread-scoped events only |
 | `thread` | always `owner/repo#N`, never bare `#N`. Thread-scoped events only |
 | `repo` | `owner/repo` — required on every thread-scoped event |
@@ -343,6 +404,10 @@ resolves appended lines automatically.
 | `commits` | short SHAs, so an entry can be checked against git rather than trusted on its word |
 | `note` | one line of free text: what actually happened. Expected on `progress` and `blocked` |
 | `blocked_by` | array of `owner/repo#N` — a dependency **hit while working**, never one merely discovered on the issue. §7's map is built from this alone |
+| `to` | `handoff` only: the handle the work passes to. The issue is reassigned to them in the same step (§8.2) |
+| `pr` | `pr_opened` only: the PR as `owner/repo#N`. Never a bare `#N`, never a URL, and never a predicted number — write the ref GitHub returned |
+| `draft` | `pr_opened` only: `true` when the thread had remaining work, `false` when it was complete |
+| `linked` | `pr_opened` only: whether the closing keyword actually created the linked-issue relationship. **Recorded because it cannot be re-derived** — a reader cannot otherwise tell a PR that never linked from one whose issue was closed by hand |
 | `mode` | `session_start` and `session_resume`: `resume_same` · `fan_out` · `handoff` · `new_track`. On a resume it describes *that resume*, not the session's original shape |
 | `threads` | `session_start`: threads the session opened with. `session_resume`: the total **after** that resume |
 | `threads_added` | `session_resume` only: array of `owner/repo#N` the resume picked up. Omitted, not `[]`, when it added none — it is what lets a session-scoped event record *which* thread joined |
@@ -480,7 +545,7 @@ flowchart TD
     YES -->|"Silence / other topic"| NOTHING["Write nothing"] --> DONE
     YES -->|Yes| FRESH["Re-read every cited value live"]
 
-    FRESH --> WRITE["Create issue (with Field provenance<br/>in the body) + branch;<br/>status.json session.threads[];<br/>session_start / session_resume;<br/>show diff, push"]
+    FRESH --> WRITE["Create issue (with Field provenance<br/>in the body) + branch;<br/>add to board, then set its Status (§3);<br/>status.json session.threads[];<br/>session_start / session_resume;<br/>show diff, push"]
     BROWSE --> DONE([end])
     WRITE --> DONE
 ```
@@ -492,6 +557,20 @@ flowchart TD
   session concerns work that is already over and does not depend on the current run's answers, so it
   is written immediately. `session_start` carries `mode` and the thread list, neither known until the
   question tree resolves, so it is appended at the end alongside `session.threads[]`.
+- **An abandoned session is swept before it is cleared, and recovered by end-work when the sweep
+  finds anything.** A session still in the cursor is by definition one end-work never closed, so a
+  synthetic `session_end` on its own records that the session stopped and nothing about the work
+  inside it. start-work therefore reads the worktrees first — uncommitted, unpushed, and commits
+  with no timeline event — and hands off to end-work (§8.2) when any of that turns up, before
+  opening the new session. **Clearing the cursor is the irreversible step**: end-work's window is
+  `session.started_at` and falls back to midnight-today once `session` is gone, so work not swept
+  before the clear falls permanently outside every future window.
+- **The hand-off is automatic, and the cursor is its entire protocol.** No arguments pass between
+  the skills: end-work reads `status.json` exactly as it always does and derives the long window
+  from it. It is not gated by a prompt in start-work because **end-work renders its own confirmation
+  block** — that block is the gate, and a second one in front of it only teaches people to skim
+  both. A declined block writes nothing anywhere, leaves the stale session open, and stops the run:
+  discarding work the developer just declined to record would invert their answer.
 - **Re-running start-work on an open session resumes it rather than restarting.** The preflight
   finds it, appends `session_resume`, and continues with the same id, so a later burst lands inside
   the existing session instead of forking a second one covering the same work.
@@ -532,10 +611,28 @@ with a non-fast-forward rejection, which is **not** a permission failure and mus
 
 **end-work proposes, then writes once.** Research runs as read-only subagents after the iron law;
 their findings become a single confirmation block covering the timeline events, the comments, the
-labels, the field values, and the dependency links. **A bare yes covers all of those. It never covers
-a closure** — closures are listed separately with their evidence and confirmed only by a reply naming
-them, because every other write here is additive and correctable while a closure changes what
-everyone else believes is finished.
+labels, the field values, the dependency links, the handoff reassignments, and any PRs to open.
+**A bare yes covers all of those. It never covers a closure** — closures are listed separately with
+their evidence and confirmed only by a reply naming them.
+
+**The consent line is who catches the mistake, not reversibility.** A PR opened too early is caught
+by its reviewer; a comment, label, field, or assignee is visible and correctable. A closure is the
+one write nobody watches, and it changes what everyone else believes is finished. Adding a second
+gate for the PR would be a gate on a decision already made at the block, and the cost of that is
+that people stop reading the first one.
+
+**PRs open over pushed work only, and draft-vs-ready is derived rather than asked.** A thread whose
+carry-over lists remaining work opens a draft carrying `Refs owner/repo#N`; a thread with nothing
+remaining opens ready for review carrying `Closes owner/repo#N`, and the merge — a human action with
+the keyword in view — is what closes the issue. A branch with unpushed commits gets no PR at all: it
+would not contain the work. The closing keyword is silently ignored off the repo's default branch,
+so the base is checked and the outcome recorded on the `pr_opened` event as `linked: true|false`.
+
+**Mirroring is automatic, not offered.** Once a `blocked_by` event is going into the timeline the
+fact is established and consented to, so the dependency is written onto the issue in the same step;
+`unblocked` removes it. A `handoff` reassigns the issue to the recipient — a timeline that says the
+work passed to someone while the issue still shows the sender is invisible to anyone reading only
+GitHub, which is most people.
 
 ```mermaid
 sequenceDiagram
@@ -552,7 +649,10 @@ sequenceDiagram
     S->>P: git status + unpushed check in EVERY session worktree
     Note over S,P: BLOCKING — the developer's own work,<br/>across every repo the session touched
     S->>G: live issue/PR state for the session window
-    S->>G: update statuses, reconcile push activity
+    S->>G: update statuses, assignees, dependency links; reconcile push activity
+    S->>G: move board Status per status-policy.yml (§3)
+    S->>G: open PRs over pushed work — link + board them
+    Note over S,G: closing keyword is INERT off the default branch:<br/>check the base, record linked:true|false
     S->>T: git pull --rebase
     S->>T: append events to this month's dev file
     S->>T: regenerate views/gantt.md + views/dependencies.md
@@ -594,8 +694,10 @@ org-scoped, per-developer report only runs when someone asks for it.
 Three layers: current repo detail, org-wide rollup, and who-did-what. Attribution comes strictly
 from author/assignee/reviewer fields.
 
-**Read-only means it never authors.** No events, no commits, no GitHub writes; the only file it
-writes is its own `snapshot.json` cursor. It does clone the tracking repo if missing and pull it
+**Read-only means it never authors.** No events, no commits, no GitHub writes — including no board
+`Status` moves; the only file it writes is its own `snapshot.json` cursor. It reads
+`status-policy.yml` to know what the moments *should* map to, which makes a card disagreeing with
+the timeline a reportable finding (§3) rather than noise — reported, never corrected. It does clone the tracking repo if missing and pull it
 before every run (§9) — sync is not authorship, and a report built on a stale clone is wrong. **But
 it clones what exists and never creates**: cloning is sync, creating a repo is authorship.
 
@@ -673,6 +775,10 @@ developer never named is something they are told about, even when it is exactly 
   missing progress comment.
 - **Exit criteria are required on every track**, so tracks can close rather than silently stop
   generating events.
+- **The board is state, and the workday skills keep it current.** A card that never moves misleads
+  more than a card that was never added, because there is no blank to notice. Every transition
+  comes from `status-policy.yml` (§3) — a written policy, never a mapping inferred from column
+  names — and appears in the confirmation block before it is written.
 - **Retention: keep everything, forever.** A developer generating ~10 events a day produces a few
   hundred KB a year. There is no compaction and no pruning — an append-only log rewritten on any
   schedule is not append-only.
@@ -691,16 +797,27 @@ developer never named is something they are told about, even when it is exactly 
 | How many cursor files, and who owns them? | Two, fully independent. `status.json` → start-work / end-work. `snapshot.json` → `/snapshot`. Zero shared fields, no cross-reads. |
 | Where is the tracking clone's path recorded? | Nowhere. `~/.claude/.tracking/<org>/` is derived from `org` on every run. |
 | What does `tracks.yml` store? | Four fields: `id`, `parent`, `status`, `exit_criteria`. |
+| Does anything move a card across the board's columns? | Yes — start-work fires `issue_created`, `branch_created`, `resumed`; end-work fires `blocked`, `unblocked`, `pr_opened`, `handoff`, `done`. All from `status-policy.yml` (§3). |
+| What if there's no `status-policy.yml`? | The transition renders `— ask` with the board's real options, and the file is written on the yes. It is never seeded, and a mapping is never inferred from column names. |
+| Does closing an issue move its card to Done? | Not reliably — only if that board's built-in workflow is enabled, which isn't readable from the API. end-work writes the transition explicitly, on the same named yes as the closure. |
 | What fields does every issue carry? | Whatever the org defines, discovered at call time. The workflow needs roles — ordering, planned start, planned finish, sizing — plus Milestone and Relationships. Set at creation: researched, shown with their sources, and confirmed before writing (§5). |
 | Who does the looking-up? | The skill, not the developer. Research runs as read-only subagents in parallel, and nothing they return is written until it has passed the return gate and the developer has accepted the block. |
 | Do generated views contain issue state? | No. Timeline and `tracks.yml` only. Every issue-vs-timeline comparison — planned/actual, sizing/actual, declared/encountered dependencies — is computed by `/snapshot` at report time. |
 | Is timeline history ever compacted? | No. |
 | How are `views/` conflicts resolved? | Discarded and regenerated. `merge=union` covers `*.jsonl` only. |
 | Who owns session lifecycle? | start-work — opens, resumes (`session_resume`), and closes abandoned sessions (`session_end {inferred:true}`). |
+| What happens to a session nobody wrapped up? | start-work sweeps its worktrees read-only. Clean → synthetic close, one line. Anything found → it invokes end-work to recover it properly, before opening the new session (§8.1). |
+| Does one skill ever invoke another? | start-work → end-work, on that recovery path only. Never the reverse — recovery runs one way so it cannot loop. |
+| What if the developer declines the recovery block? | Nothing is written by either skill, the stale session stays open, and no new session opens. Closing it anyway would discard exactly what they declined to record. |
 | Is duration or hours recorded? | No. |
 | How is branch tracked? | `repo` + `branch` fields on each thread-scoped event, plus the `<type>/<repo>-<issue#>-<slug>` naming convention. |
 | How is a multi-repo session held together? | A `session` id on every event, plus `session.threads[]` in `status.json`. |
 | What if a developer cannot push to the tracking repo? | end-work refuses to run, before writing anything. |
+| Who opens PRs? | end-work only, over already-pushed commits, on the block's single yes. start-work cannot: a freshly cut branch has no commits to propose. |
+| Draft or ready for review? | Derived from carry-over, never asked. Remaining work → draft + `Refs`; nothing remaining → ready + `Closes`. |
+| Does a PR ever get merged, reviewed, or approved by a skill? | No. Creation is the entire PR surface — every judgment about a PR belongs to a human. |
+| Why does opening a PR not need its own yes, when closing an issue does? | Who catches the mistake. A premature PR is caught by its reviewer; a premature closure is caught by nobody. |
+| What links a PR to its issue? | The closing keyword in the body, in full `owner/repo#N` form — and it is **silently ignored unless the PR targets the default branch**, so the base is checked and `linked` is recorded on the event. |
 | Is `/snapshot` auto-triggered? | No — explicitly invoked. |
 
 ---

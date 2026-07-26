@@ -46,9 +46,18 @@ start-work **owns session lifecycle**: it is the only skill that opens a session
 closes an abandoned one. Recovery belongs here because a developer who abandons a session is, by
 definition, one who did not run end-work.
 
+**Owning the lifecycle is not owning the wrap-up.** start-work decides *that* an abandoned session
+must be dealt with and *how* — but when the sweep finds real work in it, the reconciliation itself
+is end-work's job and start-work invokes it (Step 2.5) rather than reimplementing a second, weaker
+version of it here. The two skills meet at the cursor and nowhere else.
+
 **Its write surfaces are three, per target-workflow §2:** branch creation and checkout, issue
 creation with its fields, and the tracking clone plus cursor files. **It never modifies a product
 repo's file contents, never rewrites an issue body, and never writes a PR.**
+
+**PRs belong to end-work, and the reason is sequencing, not permission.** A PR needs commits, and
+at start-work the branch has none — there is nothing to propose. end-work opens PRs over work the
+developer has already pushed (target-workflow §2). If a developer asks for one here, say that.
 
 ## The Substrate
 
@@ -189,7 +198,8 @@ don't hold the record, and `.git/info/exclude` is not a file to touch on spec.
 thing committed, and it is committed to `{org}/tracking` — never to the repo it happens to sit in.
 
 Issues get created with their fields — that is this skill's documented job. Issue **bodies** are
-never rewritten and PRs are never written.
+never rewritten, and PRs are end-work's surface, not this one — a freshly cut branch has no commits
+to propose.
 
 ### Bootstrap — every run
 
@@ -243,8 +253,10 @@ whose format nobody can read is not shared.**
 tracks: []
 ```
 
-`README.md` explains the format to anyone opening the repo cold: what `tracks.yml`, `timeline/`, and
-`views/` are; that **state lives in GitHub and events live here**; that `tracks.yml` holds four fields
+`README.md` explains the format to anyone opening the repo cold: what `tracks.yml`,
+`status-policy.yml`, `timeline/`, and `views/` are — noting that `status-policy.yml` does not exist
+until the first board transition needs it, so its absence is normal in a fresh repo rather than
+something to fix; that **state lives in GitHub and events live here**; that `tracks.yml` holds four fields
 and becomes a second issue tracker if it grows more; that the timeline is append-only, one branch,
 `merge=union` on `*.jsonl` only; that `views/` is generated and hand edits are overwritten; and that
 there are no durations, no rankings, and no pruning.
@@ -265,13 +277,17 @@ developer without push rights still gets a full briefing.
 
 ```
 {org}/tracking
-├── README.md          ├── tracks.yml        └── views/          (generated)
-├── .gitattributes     └── timeline/             gantt.md
-                           YYYY-MM/<dev>.jsonl   dependencies.md
+├── README.md          ├── tracks.yml          └── views/          (generated)
+├── .gitattributes     ├── status-policy.yml       gantt.md
+                       └── timeline/               dependencies.md
+                           YYYY-MM/<dev>.jsonl
 ```
 
 **One branch, always** — never branched, force-pushed, squashed, or rebased. That linearity is what
 lets principle 3 hold. One clone and one `status.json` serve every worktree on the machine.
+
+`status-policy.yml` is written the first time a board transition is needed and no policy exists —
+**not at bootstrap.** See *Board `Status` — the transition policy*.
 
 ### `<org>.status.json`
 
@@ -372,6 +388,54 @@ so linking something already on the board costs nothing.
 **gh-wrapper reports; this skill links.** gh-wrapper has no confirmation surface, so it discovers
 and hands back `on_project: true|false` rather than writing. The write happens here, after the block
 is accepted, like every other write in this skill.
+
+### Board `Status` — the transition policy
+
+**Membership puts a card on the board; it does not move it.** An item sitting in `Backlog` while its
+branch has been cut for a week is the same silent drift as an item on no board at all — it looks
+tracked, and everyone planning off that column is reading something false.
+
+`Status` is a board-native single-select (gh-wrapper → *Projects v2 Item Fields*), and the Iron Law
+forbids guessing one. **A policy is what makes it not a guess.** `status-policy.yml` in the tracking
+repo maps this workflow's lifecycle moments to option names on one board:
+
+```yaml
+project: 2                  # the board number this policy governs
+field: Status               # the board-native field it drives
+transitions:
+  issue_created:  Backlog        # start-work
+  branch_created: In Progress    # start-work
+  resumed:        In Progress    # start-work
+  blocked:        Blocked        # end-work
+  unblocked:      In Progress    # end-work
+  pr_opened:      In Review      # end-work
+  handoff:        In Review      # end-work
+  done:           Done           # end-work
+```
+
+**start-work owns `issue_created`, `branch_created`, and `resumed`.** The rest are end-work's, and
+neither skill fires the other's moments.
+
+| Situation | Rule |
+|---|---|
+| The file is **absent** | The policy is undefined. Render the transition `— ask`, with a suggestion built from the board's **actual** option list, and write the file once the developer says yes. A one-time cost, not a per-session question. |
+| A **key** is absent | **Leave `Status` alone at that moment.** Absent means "no transition here" — never "work it out". A board with no `Blocked` column is normal, not a gap to fill. |
+| A value names an option the board **no longer returns** | **Stale policy.** Report it by name, write nothing, and re-ask that one key. Never substitute a neighbouring option that happens to accept the write. |
+| Several boards carry the item | One policy per board — `project` keys it. A board with no policy gets no transition and one report line. |
+| The item is **already** at the target option | No-op. Don't write it, and don't report it as a change that happened. |
+| The item is on **no** board | Nothing to transition. The membership line above already covers it. |
+
+**The policy stores option names; the API takes option ids.** Resolve one to the other from *this
+run's* discovery (gh-wrapper → *Discover the board's fields at call time*) — a name that doesn't
+resolve is the stale-policy row, not a reason to guess an id.
+
+**A policy-derived transition is `derived`, not inferred.** The policy is a source, so the line
+renders `← status-policy.yml` and is covered by the single yes like every other line in the block.
+It is never a separate gate — and never a silent write. A `Status` that moves without appearing in
+the block is exactly the fabrication the Iron Law exists to prevent.
+
+**Do not seed this file at bootstrap.** Its absence is the trigger to ask; an empty `transitions: {}`
+reads as "leave everything alone" and would silently make the whole mechanism inert.
 
 ### Established vs. guessed
 
@@ -484,7 +548,12 @@ flowchart TD
     READ --> SESS{Open session?}
     SESS -->|None| NEW["Mark: new session"]
     SESS -->|"Open, under 36h"| RES["Mark: resuming"]
-    SESS -->|"Open, 36h or older"| STALE["Abandoned — append session_end<br/>{inferred: true} for it now,<br/>clear it, say so in the briefing"]
+    SESS -->|"Open, 36h or older"| SWEEP["Abandoned — sweep its worktrees<br/>read-only: uncommitted, unpushed,<br/>commits with no timeline event"]
+    SWEEP -->|Clean| STALE["Append session_end<br/>{inferred: true}, clear it,<br/>say so in the briefing"]
+    SWEEP -->|"Anything found"| HANDOFF["Invoke end-work — it renders<br/>its own block and owns its writes"]
+    HANDOFF -->|"Block accepted"| REREAD["Re-read the cursor —<br/>end-work cleared it"] --> NEW
+    HANDOFF -->|"Declined"| STOP["Write nothing.<br/>Report; open no session"] --> DONE
+    HANDOFF -->|"No push access —<br/>end-work refuses"| STALE
     STALE --> NEW
     NEW --> BR
     RES --> BR
@@ -527,14 +596,47 @@ Read `<base>/.claude/<org>.status.json`.
 |---|---|---|
 | Absent | — | New session. |
 | Present | Under 36h | **Resume it.** Same id, same threads. Append `session_resume`. |
-| Present | 36h or older | **Abandoned.** Close it now, then open a new one. |
+| Present | 36h or older | **Abandoned.** Recover it (Step 2.5), then open a new one. |
+
+**A session still in the cursor is one end-work never closed.** end-work's last step moves `session`
+into `last_session` and clears it, so a session sitting here means the wrap-up never ran — that is
+what "abandoned" means, and it is why recovery lives in this skill.
 
 **An open session is stale after 36h without a close.** The threshold marks abandonment, not a
 calendar boundary: a session left open that long was walked away from rather than paused, since
 anyone still working it would have triggered start-work again inside the window and resumed it.
 
-**Closing a stale session happens here, in preflight, not at the end.** It concerns work that is
-already over and does not depend on this run's answers, so write it immediately:
+**Re-running start-work on a live session resumes it rather than restarting.** Append
+`session_resume` and continue with the same id, so a later burst lands inside the existing session
+instead of forking a second one covering the same work.
+
+### Step 2.5: Recover the Abandoned Session *(start-work only)*
+
+**Sweep before you clear.** A synthetic `session_end` on its own records only that the session
+stopped — not the work inside it. Everything between the last event and the close is lost, and
+**clearing the cursor is the step that makes it unrecoverable**: end-work's window is
+`session.started_at`, falling back to *midnight today* when no session is open, so once this cursor
+is cleared a later end-work run computes a window that excludes exactly the commits that were
+missed.
+
+So look first. All of this is read-only and costs two git commands per worktree:
+
+```bash
+git -C <worktree> status --short                          # uncommitted
+git -C <worktree> log --oneline @{upstream}..HEAD         # unpushed — no upstream means never pushed
+git -C <worktree> log --since="<session.started_at>" --oneline
+```
+
+Then grep the stale session's month file for events carrying its `session` id, and compare: commits
+in the window with no `progress` event behind them are the unrecorded work.
+
+| Sweep result | What you do |
+|---|---|
+| Clean tree, nothing unpushed, nothing unrecorded | **Close it synthetically**, one line in the briefing. Nothing was lost, so there is nothing to decide. |
+| **Anything found** — uncommitted, unpushed, or unrecorded commits | **Invoke end-work**, before anything else is written |
+| A worktree listed in `session.threads[]` is gone from disk | Report it as its own line and keep going. A vanished worktree is a finding, not a reason to skip the rest of the sweep. |
+
+#### The synthetic close
 
 ```json
 {"schema":1,"ts":"<now>","session":"<the stale id>","dev":"<dev>","event":"session_end","threads_touched":<count from its threads[]>,"repos_touched":<distinct repos>,"inferred":true}
@@ -544,9 +646,52 @@ Append it to the stale session's **own month file** — `timeline/YYYY-MM/<dev>.
 `session.started_at`, not on today — then move it into `last_session`, clear `session`, and say so
 in the briefing. Never set `inferred` on an event that was actually recorded.
 
-**Re-running start-work on a live session resumes it rather than restarting.** Append
-`session_resume` and continue with the same id, so a later burst lands inside the existing session
-instead of forking a second one covering the same work.
+#### The hand-off to end-work
+
+**Run it. Do not offer it.** The findings are on disk, the developer is about to start new work on
+top of them, and asking permission to *look properly* at work already done is a question with one
+sensible answer. What the developer still controls is every write end-work makes — **end-work
+renders its own confirmation block and nothing lands until they accept it.** That block is the gate;
+adding a second one in front of it is the pattern this workflow removes everywhere else.
+
+```
+Skill(skill: "end-work")
+```
+
+**The cursor is the entire hand-off protocol.** Pass nothing, explain nothing, share no state:
+end-work reads `<org>.status.json` exactly as it always does, finds the stale session, and derives
+its window from `session.started_at` — which is precisely the window the sweep just showed you.
+A hand-off that needed arguments would be a second implementation of end-work living in this file.
+
+**Say what you are doing and why, in one line, before invoking** — a developer who typed "start
+work" and got a wrap-up block deserves to know which session it belongs to:
+
+```
+Session 2026-07-22-nilendu-01 was left open 84h and never wrapped up.
+3 unpushed commits in ~/work/api and 4 commits with no timeline events.
+Running end-work over it first — you'll get its block before anything is written.
+```
+
+**Four rules for what happens around the call:**
+
+1. **Do not open the new session first.** end-work closes whatever is in the cursor; if this run has
+   already written a new `session`, it closes the wrong one and the stale session survives.
+2. **Re-read the cursor when it returns.** end-work's Step 9 moved `session` into `last_session` and
+   cleared it. Your earlier read is stale, and acting on it opens a session on top of one that no
+   longer exists.
+3. **No push access → no hand-off.** end-work stops before writing anything in that case, by design.
+   Fall back to the synthetic close, and report both the sweep's findings and why the proper wrap-up
+   could not run.
+4. **A declined block writes nothing — including from this skill.** If the developer says no, says
+   nothing, or changes the subject, end-work writes nothing and the cursor still holds the stale
+   session. **Do not then close it synthetically, and do not open a new session**: they have just
+   been shown exactly what would be recorded and declined it, and discarding it anyway would make
+   their "no" mean the opposite of what they said. Report that the session is still open, name the
+   two ways forward — wrap it up properly, or say "close it as abandoned" — and stop, having written
+   nothing. Next run will find it and offer again, which is correct: the work still isn't recorded.
+
+**Recovery never recurses.** end-work does not invoke start-work, and start-work invokes end-work
+only from this step, only for a session 36h or older, and only once per run.
 
 ### Step 3: Read the Branch as a Hint *(layout R only)*
 
@@ -593,10 +738,11 @@ block can carry the board line with a source instead of the issue quietly landin
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue, any
-GraphQL mutation, or gh issue edit/create/close/comment. If something seems to need
-one, return it in asks[] — never as an action. You CAN call these tools; not calling
-them is the rule you are being held to.
+NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
+create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
+never as an action. You CAN call these tools; not calling them is the rule you are
+being held to.
 DO NOT read the timeline, status.json, or tracks.yml. Everything you must compare
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 destroys the comparison.
@@ -669,7 +815,7 @@ never reported as having nothing to report.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — that is a permissions or transient failure, not a hallucination. |
 | **Discovery** — every field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
 | **Reference form** — matches `^[\w.-]+/[\w.-]+#\d+$` | Reject the record rather than guessing the owner. |
@@ -827,9 +973,23 @@ as part of creating the issue**, and there is no MCP tool for it (rung 1 is abse
 gh project item-add <number> --owner {org} --url <new issue URL>   # rung 2
 ```
 
+**And then set its `Status`, because the add does not.** The item-add returns the item id; resolve
+the policy's option name to an option id from this run's field discovery and write it:
+
+```bash
+gh project item-edit --id <item-id> --project-id <project-id> \
+                     --field-id <status-field-id> --single-select-option-id <option-id>
+```
+
+Which moment applies: `branch_created` when the accepted block cuts a branch — which is the normal
+new-thread case — and `issue_created` when an issue is created with no branch. **One transition per
+item, not both**; a thread that goes straight to work never passes through `Backlog`, and writing it
+there first would put a state on the board that was never true.
+
 **Account for every field discovery returned** — every one appears in the block, with a source. Never
 guess one, never silently skip one. **The same applies to the project**: an issue left off a
-discovered board is reported, never quietly omitted.
+discovered board is reported, never quietly omitted, and an issue *on* the board whose `Status`
+went unset is worse — it looks planned and is not.
 
 #### The confirmation block
 
@@ -857,6 +1017,9 @@ Creating msa1624/api#52 — refund idempotency
   Project      payments-board (#2)   ← the only project in msa1624; #52 would not be
                                        on it. Board membership is separate from the
                                        fields above and is not set by creating the issue.
+  Status       In Progress ← status-policy.yml: branch_created → In Progress. Adding
+                             to the board does not set this; the branch is being cut
+                             now, so #52 does not pass through Backlog.
 
   Discovery returned 4 fields; all 4 are above. No role went unfilled.
   ? = inferred, not read off a source. One line: Effort.
@@ -870,8 +1033,8 @@ Also available: 2 other in-flight threads (platform#12, web#31), 1 handoff from 
 on api#48 (scanned June and July), or something else entirely.
 
 → Yes creates #52 with those values, links it under #38, records the #43 dependency on
-  the issue, adds it to payments-board, cuts the branch, and opens the session.
-  Or correct any line in plain language.
+  the issue, adds it to payments-board and sets its Status, cuts the branch, and opens
+  the session. Or correct any line in plain language.
 ```
 
 For a resume, the same shape with the session's standing instead of a creation plan — thread, track,
@@ -962,7 +1125,8 @@ BEFORE appending any event:
 3. ACCEPTED:  the developer said yes to the block AS RENDERED.
               A correction voided the previous yes; re-render and get a new one.
 4. ACCOUNTED: every discovered field is set from a source, or was rendered `— ask`
-              and answered — AND the discovered project is linked or reported unlinked
+              and answered — AND the discovered project is linked or reported
+              unlinked, AND its Status is transitioned, no-op'd, or reported by name
 5. FRESH:     every cited value re-read live since the block was shown
 6. ONLY THEN: write
 
@@ -972,12 +1136,19 @@ Skip any step = writing a record of a session that didn't happen that way
 Then, in order:
 
 1. Create the issue and branch if that's what was accepted, with `Field provenance` in the body,
-   then add it to the board if the `Project` line was accepted — creating the issue does not.
-2. Write `session.threads[]` into `<base>/.claude/<org>.status.json`. Shape and rules:
+   then add it to the board if the `Project` line was accepted — creating the issue does not — and
+   then set the item's `Status` from the policy, because the add does not do that either.
+2. **For a resumed thread, fire `resumed`.** Read the item's current `Status` live; if it is not
+   already the policy's `resumed` option, transition it and show the line in the block. This is the
+   case that catches a thread someone parked in `Backlog` and is now actively working. If the policy
+   has no `resumed` key, or the item is already there, do nothing and say nothing.
+3. Write `session.threads[]` into `<base>/.claude/<org>.status.json`. Shape and rules:
    **_The Substrate_ → `<org>.status.json`**.
-3. Append `session_start` (carrying `mode` and `threads`) or `session_resume` (carrying `mode`,
+4. Append `session_start` (carrying `mode` and `threads`) or `session_resume` (carrying `mode`,
    `threads`, and `threads_added` when it picked up a thread) to `timeline/YYYY-MM/<dev>.jsonl`.
-4. Commit and push the tracking clone — **showing the diff, in the same step.** No second yes: the
+5. Write `status-policy.yml` if the block asked for a policy and got one. It rides the same commit
+   as the events — it is tracking-repo state like `tracks.yml`, not a cursor.
+6. Commit and push the tracking clone — **showing the diff, in the same step.** No second yes: the
    developer's yes was given at the block, and asking again is a gate on a decision already made.
    Showing the diff is disclosure, which is required; waiting on it is not.
 
@@ -1024,7 +1195,21 @@ Org: msa1624 | Mode: fan_out | Threads: 3
 - msa1624/platform#12 — review requested from you 2026-07-25
 
 ### Recovered
-- Session 2026-07-22-nilendu-01 was left open 62h and has been closed as abandoned.
+- Session 2026-07-22-nilendu-01 was left open 62h and never wrapped up. Its 2 worktrees swept
+  clean — nothing uncommitted, unpushed, or unrecorded — so it was closed as abandoned.
+
+*When the sweep finds something instead, this section says what ran:*
+
+```
+### Recovered
+- Session 2026-07-22-nilendu-01 was left open 84h and never wrapped up. The sweep found:
+  - ~/work/api  3 unpushed: 9f2c1ab, e4f5a6b, 1c2d3e4
+  - ~/work/web  uncommitted: src/PaymentForm.tsx
+  - msa1624/api#43  4 commits in the window with no timeline events
+  - ~/work/platform is in that session but no longer exists on disk
+- end-work ran over it and you accepted its block: 4 progress events recorded, PR msa1624/api#58
+  opened, payments-board moved to In Review. That session is now properly closed.
+```
 
 ### Tracking repo
 Appended session_start to timeline/2026-07/nilendu.jsonl, pushed to msa1624/tracking as 3f81a2c.
@@ -1064,6 +1249,19 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
   passed the return gate
 - Appending an abandoned session's `session_end` to *this* month's file when it started last month
 - Setting `inferred: true` on anything but a synthetic close
+- **Clearing an abandoned session without sweeping its worktrees first** — the clear is what makes
+  the loss permanent, because end-work's window falls back to midnight today once the cursor is empty
+- Finding uncommitted, unpushed, or unrecorded work in an abandoned session and closing it
+  synthetically anyway
+- Opening the new session *before* handing off — end-work would close the wrong one
+- Acting on the pre-hand-off cursor read after end-work returns, and opening a session on top of
+  one that no longer exists
+- Closing the stale session synthetically after the developer declined end-work's block — that
+  turns their "no" into the opposite of what they said
+- Asking permission before invoking end-work. Its own block is the gate; a second one in front of
+  it teaches people to skim both
+- Reimplementing end-work's reconciliation here instead of invoking it
+- Passing state into end-work instead of letting it read the cursor
 - Writing anything at all on a "just looking" run
 - Acting on the branch's proposed thread without a yes — or refusing to switch when the developer
   names a different one
@@ -1076,12 +1274,20 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
   completely normal and is invisible to everyone planning off that board
 - Assuming an auto-add workflow covered it; its scope isn't readable from here
 - Picking one board when discovery returned several, instead of rendering `— ask`
+- Adding an item to a board and leaving its `Status` empty — it looks planned and is not
+- Moving a `Status` without a policy key behind it, or without the line appearing in the block
+- Inventing a policy option name instead of writing `status-policy.yml` after a yes
+- Substituting a neighbouring option when the policy names one the board no longer has
+- Firing both `issue_created` and `branch_created` on the same item, recording a `Backlog` state
+  that was never true
+- Firing end-work's moments — `blocked`, `pr_opened`, `handoff`, `done` — from here
 - Approximating a role with a neighbouring field because the real one resisted
 - Escalating up the ladder for Issue Fields on a personally-owned account
 - Creating a track with no `exit_criteria`
 - Offering "existing track" when `tracks.yml` is empty
 - Committing or modifying a file in a product repo — branches only
-- Rewriting an issue body, or writing to a PR
+- Rewriting an issue body, or writing to a PR — a branch cut here has no commits, so there is
+  nothing to open a PR over; that is end-work's surface
 - Storing a `~`-relative `worktree` path that a later `cd` can't resolve
 - Using a **relative** base after any step has `cd`'d into a product worktree
 - Guessing the org from the directory name because the base has no remote
@@ -1115,7 +1321,14 @@ something false into the record, or into a repo that isn't yours to write.**
 | `worktree` for `session.threads[]` | The repo set entry's absolute path — never `<base>` plus a guessed name |
 | Layout R, no session in the cursor | `ls <base>/../.claude/*.status.json` and name the parent if it has one. Never adopt it |
 | Open session under 36h | Resume: same id, append `session_resume` |
-| Open session 36h+ | Close it in preflight with `session_end {inferred:true}`, then open a new one |
+| Open session 36h+ | **Sweep its worktrees first** (Step 2.5), then close or hand off on what you find |
+| Sweep came back clean | `session_end {inferred:true}` in *its* month file, clear the cursor, one line in the briefing |
+| Sweep found anything at all | Invoke end-work. Don't ask first — its own block is the gate |
+| Handing off to end-work | Pass nothing. The cursor is the whole protocol; it derives the window from `session.started_at` |
+| end-work returned | Re-read the cursor before doing anything — Step 9 cleared it |
+| Developer declined end-work's block | Write nothing. Don't close it, don't open a new session. Report and stop |
+| No push access on a hand-off | end-work refuses by design. Synthetic close, and report why the wrap-up couldn't run |
+| A session's worktree is gone from disk | Its own report line. Keep sweeping the rest |
 | Deriving the session id | See **_The Substrate_ → Session ids** |
 | Research | Wave 1 before you ask anything; Wave 2 only once new work has a name |
 | An agent payload | Return gate before you render a line of it |
@@ -1132,6 +1345,13 @@ something false into the record, or into a repo that isn't yours to write.**
 | Org has no project | Nothing to link. Say so once; not a failure. |
 | Org has several projects | `— ask`, listing them. Never pick one. |
 | Adding the issue to the board | Separate write after creation — `gh project item-add --url`. Rung 1 is absent. |
+| Setting the item's `Status` | A **third** write after the add — `gh project item-edit`. The add sets no values. |
+| Which `Status` to set | `status-policy.yml` in the tracking repo. This skill fires `issue_created`, `branch_created`, `resumed` — never end-work's moments. |
+| New thread with a branch | `branch_created` only. It never passes through `Backlog`. |
+| No `status-policy.yml` | Render `— ask` with the board's real options, then write the file in the same commit as the events |
+| Policy names an option the board lost | Report it by name and re-ask that key. Never substitute. |
+| Policy has no key for this moment | Leave `Status` alone. Absent means no transition, not "work it out". |
+| Item already at the target option | No-op. Don't write it, don't report it as a change. |
 | A role has no field | Say so. Never substitute a neighbouring field. |
 | A field write fails | Walk gh-wrapper's rungs 2–3, then report unset naming what you tried |
 | Brand new track | Parent issue → `tracks.yml` entry with `exit_criteria` → sub-issue → branch |
@@ -1145,6 +1365,14 @@ something false into the record, or into a repo that isn't yours to write.**
 | Excuse | Reality |
 |---|---|
 | "There's already a session open, I'll start a fresh one to keep things clean" | Two sessions covering one stretch of work make the timeline lie about the session's shape. Resume it. |
+| "The session is stale, I'll close it and get on with the briefing" | Closing it is the *last* step, not the first. Sweep the worktrees: the clear is what makes anything you didn't look at unrecoverable, because end-work's window collapses to midnight-today once the cursor is empty. |
+| "There are 3 unpushed commits in there, but that's the developer's problem from last week" | It's the developer's work, and right now you're the only thing looking at it. Hand off to end-work; that's what it's for. |
+| "Running a whole wrap-up when they asked to start work is presumptuous" | They asked to start work on top of work that was never recorded. end-work shows its block before writing anything — the developer decides, they just don't have to know to ask. |
+| "I'll ask before invoking end-work, to be safe" | Safe is the block end-work already renders. A confirmation in front of a confirmation means the first one gets skimmed, which is how the second one gets skimmed too. |
+| "end-work is heavy — I'll just append the missing progress events myself" | Then this file contains a second, weaker end-work that will drift from the real one. Invoke it. |
+| "They declined the wrap-up, so I'll tidy up by closing it as abandoned" | They declined having that work recorded. Discarding it anyway is the same outcome they just refused, reached by a different route. Leave it open and say so. |
+| "I opened the session first, then noticed the stale one — end-work can sort it out" | end-work closes what's in the cursor, which is now yours. The stale one survives and its work stays lost. Hand off before you write anything. |
+| "end-work finished, so I'll carry on with the session I read at the start" | That read is stale by definition — end-work's last act was to clear it. Read it again. |
 | "The branch name says thread 41, so that's what we're working on" | It's a hint. Propose it with its source and open only on a yes. They may be about to switch. |
 | "I researched it, so it's established" | Research produces a *sourced proposal*. It becomes established when the developer sees the source and says yes. If you can't write the source line in one line, you didn't research it — you guessed and then explained. |
 | "They always say yes to these blocks, I'll fold in the one field I couldn't source" | That is the exact line they'd have caught. An unsourced field renders `— ask`, never as a proposal. |
@@ -1162,6 +1390,12 @@ something false into the record, or into a repo that isn't yours to write.**
 | "The board auto-adds new issues, so I don't need to link it" | Auto-add workflows are scoped to some repos and not others, and you cannot read that scope from here. The repo hosting this thread may not be covered — and adding is idempotent, so linking costs nothing. |
 | "Setting the Issue Fields is the same as putting it on the project" | Four separate mechanisms sit on that issue. An issue can carry every field the org defines and be on no board at all. |
 | "It's on no board, but that's a board-config problem, not mine" | An issue nobody can see on the board is work nobody plans around. Link it or say it isn't linked. |
+| "I added it to the board, so the board is up to date" | The add sets no values. The card is sitting in whatever the board's default is, which is not the state the work is actually in. Set `Status` too. |
+| "Obviously a new issue starts in Backlog" | That's a policy, and it either exists in `status-policy.yml` or it doesn't. If it doesn't, ask once and write it down — don't act on a convention the board never stated. |
+| "The board has no Blocked column, I'll use On Hold — it's basically the same" | It's a different option and it means a different thing to whoever built the board. An absent key means leave `Status` alone. |
+| "The policy says In Review but the board renamed it to Review — close enough" | Close enough is the substitution this whole section forbids. Report the stale key and re-ask it. |
+| "The board's built-in workflow moves it when I cut the branch" | Same unreadable-scope problem as auto-add. You cannot see which workflows are enabled from here, and the write is idempotent. |
+| "I'll add it to the board now and set Status at wrap-up" | Later doesn't happen — that is why this is one write sequence and not two. |
 | "There's no sizing field, but this one is close enough" | Closest ≠ correct. It records a different field. Report the role unfilled instead. |
 | "The field write failed, so it can't be set" | One failed rung is not three. Walk them, then name what you tried. |
 | "Exit criteria can be added once the track takes shape" | Then it never is, and the track sits on the Gantt forever. It's required at creation. |

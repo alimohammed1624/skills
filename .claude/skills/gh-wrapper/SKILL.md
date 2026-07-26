@@ -1,6 +1,6 @@
 ---
 name: gh-wrapper
-description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, or any board-defined field), when linking issues across repositories, or when about to report that a GitHub field, board membership, or relationship cannot be set
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, or any board-defined field), when linking issues across repositories, when opening a pull request or linking one to its issue, or when about to report that a GitHub field, board membership, relationship, or PR link cannot be set
 ---
 
 # gh Wrapper: Route to the Right GitHub Surface
@@ -490,6 +490,31 @@ Iron Law exists to prevent. `Status` is not an exception: "new issues start in
 Backlog" is a policy your workflow may define, and if it hasn't, that is a value to
 confirm rather than assume.
 
+### A workflow policy *is* a source
+
+The flip side, and the reason the sentence above says "may define": **when a workflow
+has written that policy down, a transition derived from it is derived, not guessed.**
+`Status` is the one board field with a lifecycle behind it — an item moves because
+something happened to the work — so it is the one field a workflow can legitimately
+drive without asking each time.
+
+The workday skills define exactly that, in `status-policy.yml` in the org's tracking
+repo (start-work / end-work → *Board `Status` — the transition policy*). It maps
+lifecycle moments to option **names**, and the calling skill resolves those names to
+option ids against **this run's** field discovery.
+
+Three conditions make such a write legal, and all three must hold:
+
+| | Condition |
+|---|---|
+| 1 | The policy **exists and was agreed to** — not inferred from the board's column names, which is guessing with a config file in front of it |
+| 2 | The option name **resolves against this run's discovery.** A name the board no longer returns is a stale policy: report it, never substitute the nearest option |
+| 3 | The transition is **shown before it is written**, on the caller's confirmation surface, cited to the policy |
+
+Miss any one and you are back to guessing. **gh-wrapper has no confirmation surface**,
+so as always it discovers and reports — it never decides on its own that a card should
+move. A caller with no policy gets the field reported unset, exactly as before.
+
 So the two halves of Projects v2 resolve differently, and this is deliberate:
 
 | | Membership | Item fields |
@@ -500,6 +525,93 @@ So the two halves of Projects v2 resolve differently, and this is deliberate:
 Report unset board fields the same way you report unset Issue Fields — by name,
 in the same list. A caller who sees "Priority unset" and no mention of `Status`
 will reasonably assume `Status` was handled.
+
+## Linking a PR to Its Issue — Four Mechanisms, One Silent Failure
+
+Opening a PR does not link it to anything. As with an issue and its board, the
+link is a **separate mechanism from the create**, and the one that matters most
+is the one with no visible symptom when it fails.
+
+| Mechanism | What it actually does | Write path |
+|---|---|---|
+| **Closing keyword** in the PR body | GitHub's real linked-issue relationship: the sidebar link, and auto-close on merge | the body, at create — `Closes owner/repo#N` |
+| **Plain mention** (`owner/repo#N`, no keyword) | A cross-reference backlink on the issue. **No link, no auto-close** | the body |
+| **Board membership for the PR** | PRs go on Projects v2 boards too, and go missing the same silent way issues do | `gh project item-add --url <pr-url>` |
+| **`Linked pull requests`** board field | Read-only projection **derived from the closing keyword** — writing it is not a thing | — |
+
+**The last two are independent of the first two.** A PR can carry a perfect
+`Closes` keyword and be on no board; it can be on the board and linked to
+nothing. Setting one is never evidence about the other.
+
+### The Default-Branch Trap
+
+```
+A closing keyword is IGNORED — entirely, silently — unless the PR
+targets the repository's DEFAULT branch.
+
+Not "the link is created but doesn't fire on merge."
+No link is created at all.
+```
+
+This is the failure mode to design around, because nothing about the PR looks
+wrong: the body reads `Closes owner/repo#43`, the text renders, and the sidebar
+is simply empty. A PR based on anything other than the default branch — a stacked
+PR, a release branch, an integration branch — links to nothing.
+
+**So check the base before trusting the keyword**, and never infer the default
+branch from the name `main`:
+
+```bash
+gh repo view <owner>/<repo> --json defaultBranchRef --jq .defaultBranchRef.name
+```
+
+| Base | Do |
+|---|---|
+| Is the default branch | Closing keyword works. Use it. |
+| Is **not** the default branch | **Say so.** The keyword is inert — keep the plain reference for the backlink, post the issue comment, and report that no linked-issue relationship exists and the issue will not auto-close on merge. |
+
+Reporting it is the whole job here. A caller who is told the PR is "linked" when
+the base made that impossible will not check, and the issue silently outlives the
+merge.
+
+### Cross-Repo Linking Works — With Two Conditions
+
+`Closes owner/repo#N` closes an issue in a **different** repository, which matters
+in any multi-repo org where a thread's issue and its PR live apart. It needs:
+
+1. **Push access to the repo holding the issue.** Normal within one org.
+2. **The default branch**, exactly as above — the trap is not same-repo-only.
+
+**Use the full `owner/repo#N` form always, even same-repo.** It costs nothing, it
+is the only form that works cross-repo, and it removes the class of bug where a
+reference silently resolves against the wrong repository.
+
+**Manual sidebar linking is same-repo only**, so cross-repo has no fallback: if the
+base is not the default branch, there is no other way to create the relationship.
+Report it unlinked rather than implying a link exists.
+
+### The ladder for creating a PR
+
+| Rung | Path | Status |
+|---|---|---|
+| 1 — MCP | `create_pull_request(owner, repo, title, body, base, head, draft?)` | Works. Check `.github/pull_request_template.md` first. |
+| 2 — `gh` flag | `gh pr create --base --head --title --body --draft` | Works. |
+| 3 — GraphQL | `createPullRequest(input:{repositoryId, baseRefName, headRefName, ...})` | Works. |
+
+The closing keyword goes in the **body** — there is no flag or parameter for it on
+any rung. Adding the PR to a board is a separate call after creation, same as for
+an issue, and the same idempotency applies.
+
+### The gate
+
+> **A PR is created with its closing keyword in the body, or the caller is told
+> plainly that no linked-issue relationship exists and why.** Never let "I put
+> `Closes` in the body" stand in for a link the base branch made impossible.
+
+**Opening a PR is outward-facing in a way a comment is not** — it requests human
+review time. Unlike board membership, it is not a link to be made automatically off
+the back of discovery. Whether to open one is the caller's decision; this skill
+covers only how, and how to link it once the caller has decided.
 
 ## Cross-Repo Work
 
@@ -691,7 +803,7 @@ return is a coin flip. Non-empty `asks[]` **blocks every dependent write**.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — the latter is a permissions or transient failure, not a hallucination. |
 | **Discovery** — every proposed field name is in this run's `list_issue_fields` **or** this run's `projectV2.fields`, and the proposal names which | Drop the proposal; report that field unset, naming it. A proposal that doesn't say which of the two it means is not verified — the write paths differ. |
 | **Ladder honesty** — any unreachability claim is backed by `surface_log` entries at rungs 1, 2 **and** 3, or by `rung_reason: "mcp_absent"` | Treat as unproven. **The caller re-walks the ladder itself** before reporting anything unset. |
@@ -752,6 +864,16 @@ agent in a wave reports it together and you deduplicate.
 - Picking one project when discovery returned several
 - Skipping a link because an auto-add workflow "probably" caught it — its scope is
   not visible from here, and adding is idempotent anyway
+- Putting a closing keyword in a PR body without checking that the base is the
+  repo's **default branch** — off it, the keyword is inert and no link is created
+- Assuming the default branch is `main` instead of reading `defaultBranchRef`
+- Reporting a PR as "linked to #N" when the base branch made the keyword inert —
+  the body renders fine and the sidebar is empty, so nobody checks
+- Using a bare `#N` in a closing keyword for an issue in another repo
+- Opening a PR and stopping there — board membership is a separate call, and PRs
+  go missing off a board exactly the way issues do
+- Trying to write `Linked pull requests` on a board item — it is a projection of
+  the closing keyword, not a writable field
 - Approximating a field with a label, a comment, or `gh project item-edit`
 - Reading `issue_dependencies_summary` to decide whether something is blocked
 - Concluding a GraphQL field doesn't exist after one failed query
@@ -792,6 +914,9 @@ ladder. The rest mean: you are about to write something false into the record.**
 | "Board fields are just the project's copy of the issue fields" | Three kinds live there: mirrors, board-native, and read-only projections. Only board-native ones are written with `updateProjectV2ItemFieldValue`. |
 | "The mirror error means I lack permission on that field" | It means wrong mechanism. Write it on the issue with `setIssueFieldValue`. Retrying or escalating changes nothing. |
 | "Status is obviously Backlog for a new issue" | That's your workflow's policy, if it has one. Absent that, it's a guess — confirm it or report Status unset. |
+| "The workflow has a Status policy, so I can move any card I like" | The policy covers the moments it names, on the board it names, with options that still resolve. Outside that it establishes nothing. |
+| "There's no policy file, but the columns are named Todo / In Progress / Done — the mapping is obvious" | Reading a mapping off column names is guessing with extra steps. The policy is agreed to, or it doesn't exist. |
+| "The policy names an option the board dropped — I'll use the closest one" | That's the substitution this whole skill forbids, applied to the one field people plan off. Report the stale key. |
 | "Estimate is a number, I'll put a sensible one" | A fabricated estimate is read as a real one by every capacity view on the board. |
 | "I'll link the board now and set Status later" | Later doesn't happen. Discover all four up front; set fields right after the add. |
 | "Adding to the board is automatic, so fields must be too" | Adding is idempotent and content-free, which is why it's automatic. Values are content and are not. |
@@ -801,6 +926,12 @@ ladder. The rest mean: you are about to write something false into the record.**
 | "No time left to finish the fields" | Then say the fields are unset. Never upgrade "unfinished" to "impossible." |
 | "I'll put the values in the body for now" | Prose in a body is not a field. Nothing queries it. |
 | "`sort:` in the query works in the UI" | `search_*` takes dedicated `sort`/`order` params. |
+| "The body says `Closes #43`, so the PR is linked" | Only if the base is the default branch. Off it, GitHub ignores the keyword and creates nothing — and the body still renders exactly the same. Read `defaultBranchRef`. |
+| "The base is `main`, that's the default branch" | Usually. Not always, and the failure is silent when it isn't. One `--json defaultBranchRef` settles it. |
+| "Cross-repo closing keywords aren't supported" | They are — `Closes owner/repo#N`, given push access to that repo and a default-branch base. |
+| "Same repo, so a bare `#43` is fine in the keyword" | It works until the PR moves or someone reads it from elsewhere. The full form costs nothing and never resolves against the wrong repo. |
+| "I opened the PR, so the board picks it up" | Board membership is a separate call for PRs exactly as it is for issues, and the same auto-add scoping you can't see applies. |
+| "I'll set `Linked pull requests` on the board item" | It is a projection of the closing keyword. Write the keyword; the field follows. |
 | "I fell back to `gh`, so the merge is approved" | Neither translation nor fallback is consent. |
 | "The agent is read-only, so its payload is safe to use" | `Explore` holds the GitHub write tools. Read-only is a rule it was given, not a wall it hit. Run the gates. |
 | "Its JSON was malformed but the numbers are right there" | Scraping prose is how a hallucinated figure enters a record wearing a real one's clothes. Retry once, then fall back. |
@@ -830,6 +961,14 @@ ladder. The rest mean: you are about to write something false into the record.**
 | "Issue field values cannot be updated using…" | Wrong mechanism, not permissions. Switch to `setIssueFieldValue`. |
 | Just added an item to a board | Its fields are all empty. Set them or report them unset — the add wrote nothing. |
 | Board field value not established | Report it unset by name, alongside unset Issue Fields. Never invent a Status or Estimate. |
+| Caller has a written `Status` policy | A transition derived from it is **derived**, not guessed — provided the option still resolves and the caller shows it before writing |
+| Caller has no such policy | Report `Status` unset. Never read a mapping off the board's column names. |
+| Linking a PR to its issue | Closing keyword in the **body** — no flag exists on any rung |
+| Before trusting a closing keyword | `gh repo view --json defaultBranchRef` — off the default branch it is inert |
+| PR base is not the default branch | Keyword does nothing. Keep the plain reference, comment on the issue, report it unlinked |
+| PR and issue in different repos | `Closes owner/repo#N` — works, needs push access and the default branch |
+| Which reference form in a keyword | Always full `owner/repo#N`, even same-repo |
+| Just opened a PR | It is on no board. Adding it is a separate call, same as for an issue |
 | blocked-by / blocking | `gh issue edit`/`create` — URL form for cross-repo |
 | Sub-issue across repos | `--add-sub-issue <full-URL>` |
 | "Is this blocked?" | `dependencies/blocked_by` list, never the summary |

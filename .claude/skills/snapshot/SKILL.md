@@ -48,6 +48,7 @@ scoped to open work rather than to a window.
 | No timeline events | Its own `<base>/.claude/<org>.snapshot.json` cursor |
 | No commits or pushes to the tracking repo | |
 | No issue comments, field writes, closures, or labels | |
+| No board membership adds and no `Status` moves — a stale card is reported, never corrected | |
 
 It **does** clone the tracking repo if missing and pull it before every run — sync is not
 authorship, and a report built on a stale clone is wrong.
@@ -218,6 +219,13 @@ completely normal. Discover the org's projects once, with the fields
 (`organization(login:){projectsV2}`, or `user(login:)` on a personal account — projects are **not**
 org-only), then report open issues that are on no board. **Report only — this skill never adds one.**
 
+**A stale board `Status` is now a finding, not background noise.** start-work and end-work maintain
+`Status` from `status-policy.yml` in the tracking repo, so a card that disagrees with what the
+timeline shows — `Backlog` on a thread with `branch_created` weeks ago, `In Progress` on one with a
+`done` event — means either a session was never wrapped up or someone moved the card by hand. Read
+the policy to know what the moments *should* map to; **never write it, and never move a card.**
+Report the disagreement in Notes and let the workday skills fix it on their next run.
+
 ### Event timeline *(reading only)*
 
 `timeline/YYYY-MM/<dev>.jsonl` — one JSON object per line. This skill **reads** it and never appends.
@@ -227,11 +235,12 @@ org-only), then report open issues that are on no board. **Report only — this 
 | `ts` | UTC, ISO 8601, always |
 | `session` | the id shared by every event in one sitting — this is what turns a commit list into "what this person was working on" |
 | `dev` | the GitHub handle the work is attributed to |
-| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `session_end` |
+| `event` | `session_start` · `session_resume` · `branch_created` · `progress` · `blocked` · `unblocked` · `done` · `handoff` · `pr_opened` · `session_end` |
 | `track` · `thread` · `repo` · `branch` | thread-scoped events only; `thread` is always `owner/repo#N` |
 | `title` | on `branch_created`: the thread's title **as of when work began**. Never refreshed, never authoritative |
 | `commits` | short SHAs — an entry with none is unverified, and renders that way |
 | `blocked_by` | `owner/repo#N` — a dependency **actually hit** while working |
+| `pr` · `draft` · `linked` | on `pr_opened`: the PR as `owner/repo#N`, whether it opened as a draft, and whether the closing keyword actually created the linked-issue relationship. **`linked: false` is a finding** — that PR's issue will not close on merge, and nothing on either item shows it |
 
 **`branch_created` fixes a thread's actual start; `done` fixes its actual finish.** Those two are the
 only source for the actual side of any join. Planned dates come from the issue, live. **Swapping them
@@ -322,10 +331,12 @@ themselves.
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue, any
-GraphQL mutation, or gh issue edit/create/close/comment. You CAN call these tools;
-not calling them is the rule you are being held to. This report writes NOTHING to
-GitHub — if something seems to need a write, return it in asks[].
+NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
+create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+gh pr create/edit/merge/review. You CAN call these tools; not calling them is the
+rule you are being held to. This report writes NOTHING to GitHub — if something seems
+to need a write, return it in asks[]. end-work opens PRs; /snapshot never does, and
+neither do you.
 DO NOT read the timeline, tracks.yml, or status.json. Everything you must compare
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 turns it into a set compared with itself, which looks fine and means nothing.
@@ -439,7 +450,7 @@ activity — it goes in not_covered.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `setIssueFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)` | **Discard the whole payload** and say a read-only agent attempted a write — in a skill whose Iron Law is READ, NEVER AUTHOR, that is the loudest possible finding. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and say a read-only agent attempted a write — in a skill whose Iron Law is READ, NEVER AUTHOR, that is the loudest possible finding. |
 | **No ranking** — `people` keys alphabetical; no `rank`/`score`/`total`/`percentile`/`top_*`/`velocity` key; nothing sorted by a count; `themes` free of evaluative words | **Drop the layer.** Say the contribution layer could not be rendered safely. |
 | **Comparison label** names the roles you actually passed in | Reject the join; print it as not-run. |
 | **Discovery** — every field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
@@ -707,7 +718,12 @@ planned-vs-recorded comparison.)*
 - Items missing one or more discovered field values
 - Open items on no Projects v2 board: msa1624/api#6, msa1624/web#2 (payments-board exists;
   its auto-add appears scoped to msa1624/api only — reported, not changed)
+- Board Status disagreeing with the timeline: msa1624/api#43 sits in Backlog, but
+  branch_created fired 2026-07-14 and the policy maps that to In Progress — likely a session
+  that was never wrapped up. Reported, not moved.
 - Open items with no assignee — flagged, not guessed
+- Open PRs whose closing keyword never linked (`linked: false`): msa1624/api#52 — based on
+  `release/2.1`, not the default branch, so msa1624/api#41 will not close on merge
 - Possible duplicate identities (@ali and ali-work — confirm?)
 ```
 
@@ -773,6 +789,7 @@ rest mean: you are about to put something in a report that the sources do not su
 | Release-shaped report | Group by Milestone, which cuts across tracks |
 | Which fields exist | `list_issue_fields` **once**, in Step 1, passed to every agent |
 | Which boards exist | `organization(login:){projectsV2}` **once**, in Step 1, passed down |
+| A card's `Status` disagrees with the timeline | A Notes line, citing both. Read `status-policy.yml` to know the intended mapping; never write it, never move the card |
 | Issue is on no board | Notes line. Report it; never add it. |
 | Research | Four agents, one message, in parallel — then the return gate before rendering |
 | An agent failed | Retry once narrowed, then run that layer's inline procedure and say it ran degraded |
