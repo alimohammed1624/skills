@@ -1,6 +1,6 @@
 ---
 name: gh-wrapper
-description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when linking issues across repositories, or when about to report that a GitHub field or relationship cannot be set
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when linking issues across repositories, or when about to report that a GitHub field, board membership, or relationship cannot be set
 ---
 
 # gh Wrapper: Route to the Right GitHub Surface
@@ -137,8 +137,14 @@ Telling them apart is exactly what the owner-type probe is for.
 
 Org-level Issue Fields (Settings > Planning > Issue fields) live **on the issue
 itself**, independent of any Projects v2 board. They are defined per-org and can
-be anything: single-select, date, number, or text. Read "add this to the project"
-or "set the project fields" as a request to set these, not as a board operation.
+be anything: single-select, date, number, or text.
+
+**"Set the project fields" means these. "Add this to the project" does not** — that
+is board membership, a separate mechanism with its own ladder; see *Projects v2*
+below. The two are independent: an issue can carry every Issue Field the org
+defines and still be on no board at all. Setting a field is never a substitute for
+adding to a board, and reading one as the other is the failure that leaves work
+invisible to everyone who plans off the board.
 
 **Discover the org's fields at call time — never hardcode field names or
 options.** `list_issue_fields(owner)` returns each field's name, type, and, for
@@ -264,6 +270,72 @@ similar type — and they are a different feature and not the record.
 
 If the task names a field the org doesn't define, say it doesn't exist. Do not
 invent it, and do not map it onto the nearest field that does.
+
+## Projects v2 — Board Membership Is a Fourth Mechanism
+
+Four separate mechanisms sit on the same issue and are read and written
+differently. Conflating any two is wrong even when the result looks right:
+
+| Mechanism | Where it lives | Write path |
+|---|---|---|
+| **Issue Fields** | on the issue, org-defined | `issue_fields` on the issue write |
+| **Milestone** | native issue field | `milestone` on the issue write |
+| **Relationships** | dependencies API | rung 2, `gh issue edit --add-blocked-by` |
+| **Projects v2 membership** | the board, not the issue | the ladder below |
+
+**Board membership is the one that fails silently.** The others are visible on the
+issue the moment you look at it; an issue that is on no board looks completely
+normal, and only the people planning off that board ever notice.
+
+### Discover at call time — never hardcode a project number
+
+```
+gh api graphql -f query='{ organization(login:"<owner>"){
+  projectsV2(first:20){ nodes{ number title id } } } }'
+```
+
+**Projects are NOT org-only, and this is where they differ from Issue Fields,
+issue types, and Teams.** A personally-owned account has `user(login:"<owner>")
+{ projectsV2 }`. An empty result from the *organization* root on a personal
+account is the wrong query, not the final answer — switch roots and ask again.
+This is the one place the owner-type preflight's "absent is the complete answer"
+rule does **not** carry over.
+
+### The ladder for adding an item
+
+| Rung | Path | Status |
+|---|---|---|
+| 1 — MCP | — | **Absent.** No MCP tool exposes Projects v2. Say `mcp_absent` once and work rungs 2–3. This is a real gap, not a lookup failure. |
+| 2 — `gh` flag | `gh project item-add <number> --owner <owner> --url <issue-url>` | Works. URL form crosses repos. |
+| 3 — GraphQL | `addProjectV2ItemById(input:{projectId, contentId})` | Works. `contentId` is the issue's **node id**, not its number. |
+
+**Adding is idempotent.** Re-adding an item already on the board returns the
+existing item id and does not error — so linking explicitly is safe even where an
+auto-add workflow already fired. Never skip a link on the theory that automation
+probably handled it; automation is usually scoped to some repos and not others,
+and you cannot see its scope from here.
+
+### The gate — report, never silently skip
+
+Same rule as a discovered Issue Field left unset:
+
+> **A discovered project that the issue is not on is REPORTED TO THE CALLER,
+> never silently skipped.**
+
+Return all three of these distinctly, and never let them collapse into one silence:
+
+| State | What it means | Report as |
+|---|---|---|
+| No project found | the owner has no board | `project: none` — nothing to link |
+| Project found, issue on it | already linked | `on_project: true` |
+| Project found, issue **not** on it | the failure case | `on_project: false` — **the caller must be told** |
+| Several projects found | ambiguous | list them all; **never pick one** |
+
+**Discover and report. Do not link on your own initiative.** This skill has no
+confirmation surface — it cannot show a source line or obtain a yes, and a board
+write made without one is a written value the developer never accepted. The
+calling skill owns the decision and the consent; this skill owns knowing, and
+makes it impossible for the caller not to know.
 
 ## Cross-Repo Work
 
@@ -490,6 +562,18 @@ agent in a wave reports it together and you deduplicate.
 - Filling in a field value the conversation never established
 - Creating an issue without first discovering what fields the org defines
 - Leaving a discovered field neither set nor reported unset
+- Creating an issue without discovering whether the owner has a Projects v2 board
+- Leaving a discovered project neither linked nor reported unlinked — an issue on
+  no board looks completely normal and fails silently
+- Collapsing "no project exists" and "a project exists, this issue isn't on it"
+  into the same silence
+- Concluding a personal account has no projects from an empty `organization(...)`
+  query — projects are **not** org-only; switch to `user(login:)` and ask again
+- Linking a board on your own initiative — this skill has no confirmation surface,
+  so the caller owns the write and the yes
+- Picking one project when discovery returned several
+- Skipping a link because an auto-add workflow "probably" caught it — its scope is
+  not visible from here, and adding is idempotent anyway
 - Approximating a field with a label, a comment, or `gh project item-edit`
 - Reading `issue_dependencies_summary` to decide whether something is blocked
 - Concluding a GraphQL field doesn't exist after one failed query
@@ -548,6 +632,12 @@ ladder. The rest mean: you are about to write something false into the record.**
 | Which fields exist | `list_issue_fields` at call time — never a remembered list |
 | Setting a custom Issue Field | MCP `issue_fields:`, else `setIssueFieldValue` — never a label |
 | Issue type | `issue_write(..., type:)` or `gh issue edit N --type` |
+| Which projects exist | `organization(login:){projectsV2}` at call time — never a remembered number |
+| Owner is a personal account | Projects live under `user(login:){projectsV2}` — **not** absent like Issue Fields |
+| Adding an issue to a board | Rung 1 absent; `gh project item-add --url`, else `addProjectV2ItemById` |
+| Issue not on the discovered board | **Report it to the caller.** Never link it yourself, never stay silent. |
+| Discovery returned several projects | List them all; never pick one |
+| An auto-add workflow might cover it | You can't see its scope. Link anyway — adding is idempotent. |
 | blocked-by / blocking | `gh issue edit`/`create` — URL form for cross-repo |
 | Sub-issue across repos | `--add-sub-issue <full-URL>` |
 | "Is this blocked?" | `dependencies/blocked_by` list, never the summary |

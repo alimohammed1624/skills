@@ -200,13 +200,32 @@ environment provides:
   design choice about what the timeline owns, not a capability limit, and the difference is worth
   probing.
 - **Org-only features.** Issue Fields, issue types, and Teams do not exist on a personally-owned
-  account. The tracking workflow is org-scoped by design; gh-wrapper is not.
-- **`msa1624/tracking` does not exist yet.** The first run of **start-work or end-work** will offer
-  to create it — with confirmation, since creating a repo is outward-facing. `/snapshot` never
+  account. The tracking workflow is org-scoped by design; gh-wrapper is not. **Projects v2 are the
+  exception and are not org-only** — a personal account has `user(login:){projectsV2}`, so an empty
+  `organization(...)` result there is the wrong query, not an absence.
+- **Projects v2 board membership is a fourth mechanism** on an issue, alongside Issue Fields,
+  Milestone, and Relationships — and the only one that fails silently, since an issue on no board
+  looks entirely normal. Rung 1 is genuinely **absent** (no MCP tool); rung 2 is
+  `gh project item-add --url` and rung 3 is `addProjectV2ItemById`. Adding is idempotent.
+  gh-wrapper discovers and **reports**; start-work renders the line with a source and does the write
+  after the yes, because gh-wrapper has no confirmation surface. `/snapshot` reports unlinked issues
+  and never adds one. **What to probe:** that an issue created in a repo *outside* the board's
+  auto-add scope is reported rather than silently landing nowhere; that "no project exists" and
+  "a project exists and this issue isn't on it" never collapse into one silence; and that several
+  discovered projects render `— ask` rather than a pick.
+- **`msa1624/tracking` already exists** (created 2026-07-25) and carries tracks plus a timeline, so
+  **the offer-to-create bootstrap path is not exercised by a default run** — start-work and end-work
+  take the clone branch instead. To test creation, rename or delete the repo first. When it does
+  run, the offer requires confirmation, since creating a repo is outward-facing. `/snapshot` never
   offers: it clones a repo that exists and creates nothing, because cloning is sync and creating is
   authorship. Bootstrap seeds `README.md`, `.gitattributes` (`*.jsonl merge=union`), and an empty
   `tracks.yml` — all three described inline in start-work's and end-work's bootstrap sections, since
   there are no asset files any more.
+- **The repo name in `origin` may be stale.** This repo's remote says `msa1624/claude-workday-test`;
+  the live name is `msa1624/skills`, reached by GitHub's rename redirect. The substrate derives only
+  the *owner* from the remote, so paths are safe — but branch names and `issue_write(repo:)` need
+  the resolved name. Resolve it with `gh api repos/<owner>/<name> --jq .name` rather than parsing
+  the URL.
 
 ## Notes for testers
 

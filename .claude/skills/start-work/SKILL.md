@@ -234,6 +234,37 @@ happens to accept a write.
 not one a session *hit*:** a discovered blocker goes on the issue and **nowhere else**. Only a
 blocker a session actually ran into becomes a `blocked` timeline event, which end-work writes.
 
+### Projects v2 board membership
+
+**Board membership is a fourth mechanism, and it is the one that fails silently.** Issue Fields,
+Milestone, and Relationships are all visible on the issue; an issue on no board looks completely
+normal, and only the people planning off that board ever notice it is missing.
+
+**Discover the org's projects once per run, alongside the fields** — gh-wrapper carries the ladder,
+the personal-account root, and the idempotency note:
+
+```
+gh api graphql -f query='{ organization(login:"{org}"){
+  projectsV2(first:20){ nodes{ number title id } } } }'
+```
+
+Then treat the result as a line in the confirmation block like any other:
+
+| Discovery | The block shows |
+|---|---|
+| No project | Nothing to link. Say so once; do not treat it as a failure. |
+| Exactly one project, issue would not be on it | Propose the link, `←` the discovery |
+| Several projects | `— ask`, listing them. **Never pick one.** |
+
+**Never skip the link because an auto-add workflow probably caught it.** Those workflows are scoped
+to some repos and not others, and the scope is not readable from here — an issue created in a repo
+outside the scope lands nowhere, which is exactly how a board silently drifts. Adding is idempotent,
+so linking something already on the board costs nothing.
+
+**gh-wrapper reports; this skill links.** gh-wrapper has no confirmation surface, so it discovers
+and hands back `on_project: true|false` rather than writing. The write happens here, after the block
+is accepted, like every other write in this skill.
+
 ### Established vs. guessed
 
 A value is **established** when three things are true:
@@ -437,6 +468,10 @@ handoffs per *Handoff scan* above (state the bound).
 Discover the fields once here — `list_issue_fields(owner: "{org}")` — and pass the result into both
 briefs. **No subagent runs its own discovery**; two discoveries can disagree and the block would show
 one schema built from two.
+
+**Discover the org's projects in the same step**, per *The Substrate* → Projects v2 board membership.
+It is one cheap query, it has the same never-hardcode rule, and doing it here means the confirmation
+block can carry the board line with a source instead of the issue quietly landing on no board.
 
 #### Shared preamble — goes in every brief
 
@@ -646,8 +681,16 @@ issue_write(method: "create", owner, repo, title, body, type: "<discovered-type>
 sub_issue_write(method: "add", owner, repo, issue_number: <parent>, sub_issue_id: <new issue id>)
 ```
 
+Then, if the block's `Project` line was accepted, add the issue to the board — **this does not happen
+as part of creating the issue**, and there is no MCP tool for it (rung 1 is absent):
+
+```bash
+gh project item-add <number> --owner {org} --url <new issue URL>   # rung 2
+```
+
 **Account for every field discovery returned** — every one appears in the block, with a source. Never
-guess one, never silently skip one.
+guess one, never silently skip one. **The same applies to the project**: an issue left off a
+discovered board is reported, never quietly omitted.
 
 #### The confirmation block
 
@@ -672,6 +715,9 @@ Creating msa1624/api#52 — refund idempotency
   Type         Task        ← sub-issue of a Feature
   Blocked by   #43 (open)  ← #43 owns the refund endpoint shape.
                              Goes on the issue only, not the timeline.
+  Project      payments-board (#2)   ← the only project in msa1624; #52 would not be
+                                       on it. Board membership is separate from the
+                                       fields above and is not set by creating the issue.
 
   Discovery returned 4 fields; all 4 are above. No role went unfilled.
   ? = inferred, not read off a source. One line: Effort.
@@ -685,7 +731,8 @@ Also available: 2 other in-flight threads (platform#12, web#31), 1 handoff from 
 on api#48 (scanned June and July), or something else entirely.
 
 → Yes creates #52 with those values, links it under #38, records the #43 dependency on
-  the issue, cuts the branch, and opens the session. Or correct any line in plain language.
+  the issue, adds it to payments-board, cuts the branch, and opens the session.
+  Or correct any line in plain language.
 ```
 
 For a resume, the same shape with the session's standing instead of a creation plan — thread, track,
@@ -772,7 +819,7 @@ BEFORE appending any event:
 3. ACCEPTED:  the developer said yes to the block AS RENDERED.
               A correction voided the previous yes; re-render and get a new one.
 4. ACCOUNTED: every discovered field is set from a source, or was rendered `— ask`
-              and answered
+              and answered — AND the discovered project is linked or reported unlinked
 5. FRESH:     every cited value re-read live since the block was shown
 6. ONLY THEN: write
 
@@ -781,7 +828,8 @@ Skip any step = writing a record of a session that didn't happen that way
 
 Then, in order:
 
-1. Create the issue and branch if that's what was accepted, with `Field provenance` in the body.
+1. Create the issue and branch if that's what was accepted, with `Field provenance` in the body,
+   then add it to the board if the `Project` line was accepted — creating the issue does not.
 2. Write `session.threads[]` into `~/.claude/<org>.status.json`. Shape and rules:
    **_The Substrate_ → `<org>.status.json`**.
 3. Append `session_start` (carrying `mode` and `threads`) or `session_resume` (carrying `mode`,
@@ -880,6 +928,11 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
   guess wearing a rationale.
 - Writing a field name you did not discover this run
 - Leaving a discovered field neither set nor reported unset
+- Creating an issue without discovering whether the org has a Projects v2 board
+- Leaving a discovered board neither linked nor reported unlinked — the issue looks
+  completely normal and is invisible to everyone planning off that board
+- Assuming an auto-add workflow covered it; its scope isn't readable from here
+- Picking one board when discovery returned several, instead of rendering `— ask`
 - Approximating a role with a neighbouring field because the real one resisted
 - Escalating up the ladder for Issue Fields on a personally-owned account
 - Creating a track with no `exit_criteria`
@@ -912,6 +965,10 @@ something false into the record, or into a repo that isn't yours to write.**
 | Picking up someone's work | **_The Substrate_ → Handoff scan**: this month + last, all devs, bound stated in the output; mode `handoff` |
 | New task in a track | Sub-issue under the track's `parent`, every discovered field accounted for, then branch |
 | Which fields to set | `list_issue_fields` at call time — never a remembered list |
+| Which board to add to | `organization(login:){projectsV2}` at call time — never a remembered number |
+| Org has no project | Nothing to link. Say so once; not a failure. |
+| Org has several projects | `— ask`, listing them. Never pick one. |
+| Adding the issue to the board | Separate write after creation — `gh project item-add --url`. Rung 1 is absent. |
 | A role has no field | Say so. Never substitute a neighbouring field. |
 | A field write fails | Walk gh-wrapper's rungs 2–3, then report unset naming what you tried |
 | Brand new track | Parent issue → `tracks.yml` entry with `exit_criteria` → sub-issue → branch |
@@ -939,6 +996,9 @@ something false into the record, or into a repo that isn't yours to write.**
 | "I'll set that field to the middle option — it's the safe default" | A guessed value is indistinguishable from a real one downstream. Ask. |
 | "I know this org's fields, I'll skip the discovery call" | Recall is not discovery. An admin can change the set without telling you, and you'd never know. |
 | "Discovery returned a field nobody mentioned, I'll leave it out quietly" | A silently skipped field reads as "not applicable" to whoever reads the record next. Set it or say it's unset. |
+| "The board auto-adds new issues, so I don't need to link it" | Auto-add workflows are scoped to some repos and not others, and you cannot read that scope from here. The repo you're standing in may not be covered — and adding is idempotent, so linking costs nothing. |
+| "Setting the Issue Fields is the same as putting it on the project" | Four separate mechanisms sit on that issue. An issue can carry every field the org defines and be on no board at all. |
+| "It's on no board, but that's a board-config problem, not mine" | An issue nobody can see on the board is work nobody plans around. Link it or say it isn't linked. |
 | "There's no sizing field, but this one is close enough" | Closest ≠ correct. It records a different field. Report the role unfilled instead. |
 | "The field write failed, so it can't be set" | One failed rung is not three. Walk them, then name what you tried. |
 | "Exit criteria can be added once the track takes shape" | Then it never is, and the track sits on the Gantt forever. It's required at creation. |

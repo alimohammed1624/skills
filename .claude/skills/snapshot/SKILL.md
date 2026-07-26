@@ -160,9 +160,17 @@ call, not the definition** — if a run discovers a different set, the discovere
 **`Size` and `Estimate` are not defined in this org.** Never report a value for either. Effort is the
 only sizing signal, and the sizing join says so in its own label.
 
-Three mechanisms sit on the same issue and are read differently: **Issue Fields** (above),
-**Milestone** (a native issue field), and **Relationships** (the dependencies API). **Do not conflate
-them** — a value read from one and reported as another is wrong even when it looks right.
+**Four** mechanisms sit on the same issue and are read differently: **Issue Fields** (above),
+**Milestone** (a native issue field), **Relationships** (the dependencies API), and **Projects v2
+board membership** (`issue.projectItems`). **Do not conflate them** — a value read from one and
+reported as another is wrong even when it looks right. An issue can carry every field the org
+defines and be on no board at all.
+
+**Board membership is worth a Notes line because it fails silently.** Auto-add workflows are usually
+scoped to some repos and not others, so issues created outside that scope land nowhere and look
+completely normal. Discover the org's projects once, with the fields
+(`organization(login:){projectsV2}`, or `user(login:)` on a personal account — projects are **not**
+org-only), then report open issues that are on no board. **Report only — this skill never adds one.**
 
 ### Event timeline *(reading only)*
 
@@ -634,6 +642,8 @@ planned-vs-recorded comparison.)*
 ### Notes
 - Repos with no timeline coverage: msa1624/web-legacy (untracked, not inactive)
 - Items missing one or more discovered field values
+- Open items on no Projects v2 board: msa1624/api#6, msa1624/web#2 (payments-board exists;
+  its auto-add appears scoped to msa1624/api only — reported, not changed)
 - Open items with no assignee — flagged, not guessed
 - Possible duplicate identities (@ali and ali-work — confirm?)
 ```
@@ -666,6 +676,10 @@ planned-vs-recorded comparison.)*
 - Ranking developers, scoring output, or characterizing anyone's week
 - Guessing a real name or pronouns from a GitHub handle
 - Calling a repo with no timeline events "inactive"
+- Adding anything to a Projects v2 board — this skill reports membership, never writes it
+- Treating an issue's Issue Field values as evidence it is on a board; they are separate
+  mechanisms and an issue can have every field and no board
+- Concluding a personal account has no projects from an empty `organization(...)` query
 - Finishing without overwriting the cursor
 
 **The first group means: you are about to run when you shouldn't, or write when you must not. The
@@ -684,6 +698,8 @@ rest mean: you are about to put something in a report that the sources do not su
 | Track scope | `tracks.yml` + timeline, following `parent` for live title/owner/dates |
 | Release-shaped report | Group by Milestone, which cuts across tracks |
 | Which fields exist | `list_issue_fields` **once**, in Step 1, passed to every agent |
+| Which boards exist | `organization(login:){projectsV2}` **once**, in Step 1, passed down |
+| Issue is on no board | Notes line. Report it; never add it. |
 | Research | Four agents, one message, in parallel — then the return gate before rendering |
 | An agent failed | Retry once narrowed, then run that layer's inline procedure and say it ran degraded |
 | No tracking repo for the org | Report it, name start-work, run the GitHub-only layers. Never offer to create it. |
