@@ -26,6 +26,10 @@ Five rules govern everything below.
 5. **Out-of-band.** The record of the work never lives on a branch of the work it describes. Branch
    identity is *data on an event*, never the *location* of an event.
 
+**Scope.** This workflow is org-scoped by design. It depends on Issue Fields and issue types, which
+are organization-only GitHub features — absent on a personally-owned account, not merely restricted.
+`gh-wrapper` is account-agnostic; this workflow is not.
+
 ---
 
 ## 2. System Layout
@@ -72,15 +76,16 @@ operations can reach it. The two are split by **who owns the write**:
 creates lands inside a repo you work in, so none of it appears in a product repo's `git status` and
 no product repo needs a `.gitignore` entry for any of it.
 
-**Write surfaces.** These skills write in exactly three places, and nowhere else:
+**Write surfaces.** These skills write in exactly four places, and nowhere else:
 
 | Location | Writes permitted |
 |---|---|
-| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff and confirming. |
+| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The developer's yes is given at the confirmation block (§8.1, §8.2), not again at the push: showing the diff is a *disclosure* requirement, and waiting on it is a second gate on a decision already made. |
 | `~/.claude/<org>.{status,snapshot}.json` | Local cursor writes. No git involved. |
 | Product repos | Branch creation and checkout, by start-work only (§8.1). No file contents modified, nothing committed, nothing pushed. |
+| Issues in product repos | Creation and field-setting by start-work (§8.1); status reconciliation by end-work (§8.2). Issue *bodies* are not rewritten and PRs are never written. |
 
-Everything else — issues, PRs, other people's repos — is read-only.
+Everything else — PRs, issue bodies, other people's repos — is read-only.
 
 ```mermaid
 flowchart TB
@@ -218,26 +223,52 @@ skill derives from `git config --get remote.origin.url`. Bootstrap-if-missing an
 - **Thread** — one unit of work inside a track. One GitHub issue, plus the PRs, branches, and
   commits that close it.
 
-Every thread has an issue, and **every issue carries the org's standard project fields**, set at
-creation:
+Every thread has an issue, and **every issue carries the org's standard fields**, set at creation.
 
-| Field | Purpose |
-|---|---|
-| Priority | Ordering within a track |
-| Size | Coarse t-shirt bucket, for planning at track level |
-| Estimate | Numeric estimate, for planning at thread level |
-| Effort | Recorded effort, compared against Estimate |
-| Start date | Planned start — the "planned" half of planned-vs-actual (§8.3) |
-| Target date | Planned finish — likewise |
-| Milestone | The release or checkpoint the thread ships in |
-| Relationships | Structured blocks / blocked-by / relates-to links between issues |
+The workflow depends on *roles*, not on field names. Which field fills a role is discovered at call
+time via `list_issue_fields` and is never hardcoded — the right-hand column is this org's mapping at
+the last check, not a contract:
 
-**These are never guessed.** A value the conversation has not established is asked for, not invented
-— an estimate nobody stated is not a field to fill in with a plausible number.
+| Role | Used by | Field in this org |
+|---|---|---|
+| Ordering within a track | §5 | Priority |
+| Planned start | §8.3 planned-vs-actual | Start date |
+| Planned finish | §8.3 planned-vs-actual | Target date |
+| Sizing signal | §8.3 calibration | Effort |
+| Release grouping | §8.3 | Milestone — a native issue field, *not* an Issue Field |
+| Declared dependencies | §8.3 | Relationships — the dependencies API, *not* an Issue Field |
 
-Start date and Target date are what make a thread's *planned* dates exist at all, which is what
-`/snapshot` charts actuals against. Relationships and Milestone are live issue state and are read
-live wherever they are needed; neither is copied into the timeline or `tracks.yml`.
+Those last two are separate GitHub mechanisms that happen to sit on the same issue. They are
+discovered, read, and written differently from Issue Fields, and conflating the three is how a
+value ends up written somewhere nothing queries.
+
+**If a role has no field, the analysis that needs it degrades and says so.** It is never
+approximated with a neighbouring field that happens to accept a write. This org defines no `Size`
+or `Estimate`; §8.3 states what that costs.
+
+**These are never guessed.** A value the conversation has not *established* is asked for, not
+invented — an estimate nobody stated is not a field to fill in with a plausible number.
+
+**"Established" has a precise meaning**, and the skills own the full definition
+(each workflow skill's *The Substrate* → *Established vs. guessed*). In short: a value is established when it has a
+**source**, the source is **shown to the developer** beside it, and the developer **said yes after
+seeing it** — all three. A value missing any one is guessed.
+
+This is what makes the skills' research-and-propose flow legal rather than a loophole. The skill does
+the looking-up so the developer never has to open the project board; the developer still does the
+accepting. What is forbidden is the middle — a plausible value with a rationale composed afterwards
+to justify it. **Source first, then value. Never value, then rationale.** A field with no source is
+rendered as a question carrying a labelled suggestion, not as a proposal.
+
+The planned-start and planned-finish fields are what make a thread's *planned* dates exist at all,
+which is what `/snapshot` charts actuals against. Relationships and Milestone are live issue state
+and are read live wherever they are needed; neither is copied into the timeline or `tracks.yml`.
+
+**A dependency that research *found* is not a dependency a session *hit*.** A blocker discovered by
+reading the issues is written to the issue's Relationship and **nowhere else**; only a blocker a
+session actually ran into becomes a `blocked` timeline event. `blocked_by` is the sole input to
+`views/dependencies.md` (§7) and to §8.3's declared-vs-encountered join, so feeding it discovered
+dependencies makes that join compare a set with itself — degraded with no visible symptom.
 
 Parent/child structure comes from GitHub sub-issues, not a shadow hierarchy. **A milestone is not a
 track** — a milestone is a shipping checkpoint owned by GitHub, a track is a registry entry owned by
@@ -311,8 +342,10 @@ resolves appended lines automatically.
 | `title` | on `branch_created` only: the thread's title as of when work started. A label for the views, never refreshed and never authoritative (§7) |
 | `commits` | short SHAs, so an entry can be checked against git rather than trusted on its word |
 | `note` | one line of free text: what actually happened. Expected on `progress` and `blocked` |
-| `blocked_by` | array of `owner/repo#N` — a dependency hit while working. §7's map is built from this |
-| `mode` | `session_start` only: `resume_same` · `fan_out` · `handoff` · `new_track` |
+| `blocked_by` | array of `owner/repo#N` — a dependency **hit while working**, never one merely discovered on the issue. §7's map is built from this alone |
+| `mode` | `session_start` and `session_resume`: `resume_same` · `fan_out` · `handoff` · `new_track`. On a resume it describes *that resume*, not the session's original shape |
+| `threads` | `session_start`: threads the session opened with. `session_resume`: the total **after** that resume |
+| `threads_added` | `session_resume` only: array of `owner/repo#N` the resume picked up. Omitted, not `[]`, when it added none — it is what lets a session-scoped event record *which* thread joined |
 | `threads_touched` / `repos_touched` | `session_end` only: counts, so a session's shape is readable without replaying it |
 | `inferred` | `true` on a synthetic `session_end` written for an abandoned session (§8.1). Never set on a recorded event |
 
@@ -409,8 +442,15 @@ start-work **owns session lifecycle**: it is the only skill that opens a session
 closes an abandoned one. Recovery belongs here because a developer who abandons a session is, by
 definition, one who did not run end-work.
 
+**start-work researches before it asks.** Everything a developer would otherwise open the project
+board to find — what moved since they left, what is waiting on them, what blocks each thread, what
+the parent and siblings carry — is gathered first, by read-only subagents running in parallel, and
+rendered as one proposal. The developer reads it and says yes, or says what to change.
+
 The branch a developer is standing on is a strong hint about what they are doing, which collapses
-the common case of the question tree into a single confirmation.
+the common case of the question tree into a single confirmation. Intent resolves from three sources
+in priority order: **what the developer said when they triggered the skill**, then the branch, then —
+only if neither answers it — one question.
 
 ```mermaid
 flowchart TD
@@ -423,32 +463,26 @@ flowchart TD
     STALE --> NEW
     NEW --> BR
     RES --> BR
-    BR["git rev-parse --abbrev-ref HEAD"] --> LOOK{Timeline has events<br/>for this branch?}
+    BR["git rev-parse --abbrev-ref HEAD;<br/>grep timeline for this branch;<br/>grep handoffs (2 months, all devs)"] --> W1["<b>WAVE 1</b> — parallel, read-only:<br/>what moved · what awaits you ·<br/>blockers, ready_now, still_blocked"]
 
-    LOOK -->|Yes| PRE["Pre-fill the answer:<br/>on feat/api-41-checkout, so track<br/>payments-v2, thread api#41,<br/>last touched Thursday by you"]
-    LOOK -->|No| GLANCE
-    PRE --> GLANCE["One line: what moved since<br/>last_session.ended_at"]
+    W1 --> GATE1["Return gate on every payload"]
+    GATE1 --> INTENT{Intent: from what they said,<br/>then the branch,<br/>then ask once}
 
-    GLANCE --> Q1{Continuing existing work,<br/>starting something new,<br/>or just looking?}
+    INTENT -->|Continuing| BLOCK
+    INTENT -->|New work| W2["<b>WAVE 2</b>: field proposals,<br/>each classified established /<br/>precedent / must_ask"]
+    INTENT -->|Just looking| BROWSE["Full org briefing;<br/>no session opened,<br/>nothing written"]
 
-    Q1 -->|Continuing| Q2{Which?}
-    Q2 -->|"This branch's thread<br/>(pre-selected when known)"| R1["Resume — brief scoped to that<br/>thread's activity and blockers"]
-    Q2 -->|Other in-flight threads| R2["List open threads I own across all<br/>tracks and repos — <b>multi-select</b>,<br/>check out each branch"]
-    Q2 -->|Someone's handoff| R3["Find handoff events addressed to me;<br/>show their carry-over and<br/>the branch they left it on"]
+    W2 --> GATE2["Return gate"] --> BLOCK
 
-    Q1 -->|New work| Q3{Task in an existing track,<br/>or a whole new track?}
-    Q3 -->|Existing track| N1["Pick track from tracks.yml,<br/>sub-issue under the epic with every<br/>required field set (section 5),<br/>branch feat/repo-N-slug"]
-    Q3 -->|Brand new track| N2["Epic issue + tracks.yml entry<br/>+ first sub-issue + branch"]
+    BLOCK["<b>ONE block</b>: the thread, the track,<br/>every field with its source,<br/>discovered blockers, the branch,<br/>and the alternatives not chosen"] --> YES{Explicit yes?}
 
-    Q1 -->|Just looking| BROWSE["Full org briefing from the tracking<br/>clone; no session opened,<br/>nothing written"]
+    YES -->|Correction| REDO["Re-render the WHOLE block,<br/>re-derive dependent lines.<br/>Prior yes is void."] --> YES
+    YES -->|"Silence / other topic"| NOTHING["Write nothing"] --> DONE
+    YES -->|Yes| FRESH["Re-read every cited value live"]
 
-    R1 --> BRIEF["Briefing, scoped by the answer"]
-    R2 --> BRIEF
-    R3 --> BRIEF
-    N1 --> BRIEF
-    N2 --> BRIEF
-    BROWSE --> BRIEF
-    BRIEF --> WRITE["Update status.json session.threads[];<br/>append session_start (with mode)<br/>or session_resume"]
+    FRESH --> WRITE["Create issue (with Field provenance<br/>in the body) + branch;<br/>status.json session.threads[];<br/>session_start / session_resume;<br/>show diff, push"]
+    BROWSE --> DONE([end])
+    WRITE --> DONE
 ```
 
 - **An open session is stale after 36h without a close.** The threshold marks abandonment, not a
@@ -463,6 +497,15 @@ flowchart TD
   the existing session instead of forking a second one covering the same work.
 - **The branch lookup is a hint, not a decision.** It pre-selects a default; the developer can always
   choose otherwise. Standing on `main` with a clean tree simply means no pre-fill.
+- **Research runs before the question, and writes nothing.** Its output is an input to what the
+  developer is being asked, which is why it cannot run after. Results are never persisted — a
+  research result is a cache of live state, so every value the block cited is **re-read live
+  immediately before writing**, and a value that changed in the interval re-renders instead.
+- **One block, one yes.** Every field discovery returned appears in it, each beside the source it was
+  read from, with inferred lines marked and re-listed. A field with no source renders as a question
+  carrying a labelled suggestion. Silence is not consent; a correction voids the previous yes and the
+  whole block re-renders. The issue body carries a `Field provenance` section so the sources survive
+  the confirmation and stay auditable.
 - **New work creates the branch**, named from the issue it just created (§3).
 - **"Just looking" opens nothing and writes nothing.** A skill that demands a track before it will
   say anything is a skill people stop running.
@@ -472,13 +515,27 @@ flowchart TD
 **The iron law: uncommitted or unpushed work blocks a clean handoff.** It is checked first, on every
 run, and reported at the top.
 
-**The check runs in every worktree the session touched**, iterating `session.threads[].worktree` —
-not only the repo the developer happens to be standing in when they wrap up. A session that branched
-in three repos leaves work in three trees, and the developer wraps up in one of them.
+**The check runs over a derived *worktree set*, not over `session.threads[]` directly.** The set is
+every `session.threads[].worktree` **plus the repo the developer is standing in**; with no session
+open, it is the current repo plus every repo on this developer's timeline since the window. It is
+never empty. Iterating `threads[]` alone silently checks nothing on a no-session run — which is
+precisely the run where nobody opened a session and work is likeliest to be sitting uncommitted.
 
-**Write access is verified before anything is written.** A developer without push rights to the
-tracking repo does not get a degraded wrap-up that banks events locally forever; the run stops and
-says so (§9).
+**The iron law is never delegated to a subagent.** A subagent the skill cannot see into reporting
+"clean" is exactly the failure that ships someone's uncommitted work. It runs in the skill, before
+any research is dispatched.
+
+**Write access is verified before anything is written — and after the pull.** A developer without
+push rights to the tracking repo does not get a degraded wrap-up that banks events locally forever;
+the run stops and says so (§9). The order matters: a clone behind its remote fails a push dry-run
+with a non-fast-forward rejection, which is **not** a permission failure and must not be read as one.
+
+**end-work proposes, then writes once.** Research runs as read-only subagents after the iron law;
+their findings become a single confirmation block covering the timeline events, the comments, the
+labels, the field values, and the dependency links. **A bare yes covers all of those. It never covers
+a closure** — closures are listed separately with their evidence and confirmed only by a reply naming
+them, because every other write here is additive and correctable while a closure changes what
+everyone else believes is finished.
 
 ```mermaid
 sequenceDiagram
@@ -499,7 +556,7 @@ sequenceDiagram
     S->>T: git pull --rebase
     S->>T: append events to this month's dev file
     S->>T: regenerate views/gantt.md + views/dependencies.md
-    S->>D: show the timeline diff, ask to confirm
+    S->>D: show the timeline diff, then push — no second yes
     D->>S: confirm
     S->>T: commit + push (one commit, tracking repo only)
     Note over S,T: push rejected → discard views/, pull --rebase<br/>(jsonl union-merges), regenerate views, push.<br/>NEVER hand-resolve a views/ conflict
@@ -539,18 +596,34 @@ from author/assignee/reviewer fields.
 
 **Read-only means it never authors.** No events, no commits, no GitHub writes; the only file it
 writes is its own `snapshot.json` cursor. It does clone the tracking repo if missing and pull it
-before every run (§9) — sync is not authorship, and a report built on a stale clone is wrong.
+before every run (§9) — sync is not authorship, and a report built on a stale clone is wrong. **But
+it clones what exists and never creates**: cloning is sync, creating a repo is authorship.
+
+**The layers and joins run as parallel read-only subagents**, which is what makes a three-layer org
+report affordable. Two rules keep that safe:
+
+- **Field discovery happens once, in the skill, and is passed to every agent.** Several agents
+  discovering independently can return several mappings, which the report would then render as one
+  schema — wrong with no visible symptom.
+- **Agents return structured findings; the skill renders them.** Principle 4 is a property of the
+  output, and prose cannot be reliably de-editorialized after the fact — but a parent can refuse to
+  accept anything that isn't rows. For the same reason, **the skill writes the "which comparison I
+  ran" line, never the agent**: an agent that ran a partial join is the worst-placed thing in the
+  system to describe how partial it was.
 
 It produces four things neither source can show on its own, each a live join of issue state against
 timeline history — computed at report time and cached nowhere:
 
 - **A complete org rollup, cheaply.** One `git pull` plus local file reads, rather than fanning out
   across every repo in the org.
-- **Planned vs. actual.** Planned dates fetched live from Start date / Target date, actual dates
-  read from the timeline. The committed Gantt charts actuals only (§7).
-- **Estimate vs. effort.** Estimate and Size are what the work was expected to take; Effort is what
-  was recorded against it, and the timeline shows the sessions it actually took. The three together
-  are how estimates get calibrated, and they are never compared across people (principle 4).
+- **Planned vs. actual.** Planned dates fetched live from whichever fields fill the planned-start
+  and planned-finish roles (§5) — `Start date` and `Target date` in this org — actual dates read
+  from the timeline. The committed Gantt charts actuals only (§7).
+- **Sizing vs. actual.** The sizing field is what the work was expected to take; the timeline shows
+  the sessions it actually took. The two together are how estimates get calibrated, and they are
+  never compared across people (principle 4). This org defines no separate `Estimate` or `Size`, so
+  the comparison available is Effort against the timeline — one signal, not two. `/snapshot` says
+  which comparison it ran rather than presenting a degraded one as the full analysis.
 - **Declared vs. encountered dependencies.** The issues' Relationships field says what was expected
   to block what; the timeline's `blocked_by` events say what actually did. Each direction of
   disagreement is worth surfacing — a dependency hit in practice but never declared, and a declared
@@ -565,11 +638,21 @@ cuts across tracks rather than following them (§5).
 
 | Situation | Behaviour |
 |---|---|
-| Tracking repo does not exist for the org | Offer to create it — **with confirmation**. Creating a repo is outward-facing and never happens implicitly. |
+| Tracking repo does not exist for the org | **start-work / end-work:** offer to create it — **with confirmation**. Creating a repo is outward-facing and never happens implicitly. **`/snapshot`: never offers.** Cloning is sync; creating is authorship. It reports the absence, names start-work, and runs the GitHub-only layers with the timeline joins reported as not-run. |
 | Repo exists, no local clone | Clone to `~/.claude/.tracking/<org>/` — a deterministic path, nothing to record. Whichever of start-work, end-work, or `/snapshot` runs first bootstraps it; the others find it present. |
 | Clone exists but is stale | `git pull --rebase` at the start of every start-work, end-work, and `/snapshot` run. Not conditional on a stored sync timestamp — there isn't one. |
 | Developer has no write access | **end-work refuses to run**, checking push access before writing anything rather than banking events nobody will see. start-work and `/snapshot` work in full, since both only read. A `--local-only` escape hatch exists for someone knowingly accepting an unshared record; it is never the default and never silent. |
 | Empty `tracks.yml` | "Task in an existing track" is not offered in the question tree; the flow degrades to "brand new track" with no special case. |
+| MCP tools not loaded this session | Say so once and work the remaining rungs for the rest of the session. Not a reason to report anything unavailable, and not re-checked per command. |
+| A field or relationship looks unsettable | Walk all three rungs before saying it cannot be set, then name what was tried. Running out of time makes a field *unset*, never *unsettable*. |
+| Owner is a personal account | Issue Fields and issue types do not exist there. The analyses that depend on them degrade per §5 and say so; nothing is approximated to fill the gap. |
+
+Access to GitHub itself is `gh-wrapper`'s job — `.claude/skills/gh-wrapper/SKILL.md` owns the ladder
+and the per-surface traps, and `docs/github-surfaces.md` owns the mechanics of what each surface can
+and cannot reach. This section states what must hold, not how to reach it; neither is restated here.
+
+Delegated research is named in the output too: what ran, what it read, and what it could not cover.
+An agent's partial coverage is printed rather than quietly folded into a complete-looking result.
 
 The skills operate on the tracking repo visibly, not silently. Committing in a directory the
 developer never named is something they are told about, even when it is exactly what they asked for.
@@ -608,8 +691,9 @@ developer never named is something they are told about, even when it is exactly 
 | How many cursor files, and who owns them? | Two, fully independent. `status.json` → start-work / end-work. `snapshot.json` → `/snapshot`. Zero shared fields, no cross-reads. |
 | Where is the tracking clone's path recorded? | Nowhere. `~/.claude/.tracking/<org>/` is derived from `org` on every run. |
 | What does `tracks.yml` store? | Four fields: `id`, `parent`, `status`, `exit_criteria`. |
-| What fields does every issue carry? | Priority, Size, Estimate, Effort, Start date, Target date, Milestone, Relationships — set at creation, never guessed (§5). |
-| Do generated views contain issue state? | No. Timeline and `tracks.yml` only. Every issue-vs-timeline comparison — planned/actual, estimate/effort, declared/encountered dependencies — is computed by `/snapshot` at report time. |
+| What fields does every issue carry? | Whatever the org defines, discovered at call time. The workflow needs roles — ordering, planned start, planned finish, sizing — plus Milestone and Relationships. Set at creation: researched, shown with their sources, and confirmed before writing (§5). |
+| Who does the looking-up? | The skill, not the developer. Research runs as read-only subagents in parallel, and nothing they return is written until it has passed the return gate and the developer has accepted the block. |
+| Do generated views contain issue state? | No. Timeline and `tracks.yml` only. Every issue-vs-timeline comparison — planned/actual, sizing/actual, declared/encountered dependencies — is computed by `/snapshot` at report time. |
 | Is timeline history ever compacted? | No. |
 | How are `views/` conflicts resolved? | Discarded and regenerated. `merge=union` covers `*.jsonl` only. |
 | Who owns session lifecycle? | start-work — opens, resumes (`session_resume`), and closes abandoned sessions (`session_end {inferred:true}`). |
@@ -670,7 +754,7 @@ worktrees, not just the one the developer is standing in.
 ```mermaid
 flowchart TD
     EW([end-work]) --> LOAD["Read session.threads from<br/>~/.claude/msa1624.status.json"]
-    LOAD --> LOOP["For EVERY worktree in the session"]
+    LOAD --> LOOP["For EVERY worktree in the derived set<br/>(never empty, even with no session)"]
     LOOP --> A["~/work/api<br/>git status + unpushed check"]
     LOOP --> B["~/work/web<br/>git status + unpushed check"]
     LOOP --> C["~/work/platform<br/>git status + unpushed check"]

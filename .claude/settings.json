@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "SCOPE WARNING: permissions.deny applies to every agent in this project, including the main",
+    "conversation — it cannot distinguish a research subagent from the skill that dispatched it.",
+    "So this list holds only operations NO caller here should ever perform. It deliberately does",
+    "NOT deny `git commit`/`git push` (end-work commits and pushes the tracking clone), `git",
+    "checkout` (start-work cuts branches), or `gh issue edit`/`create`/`comment`/`close` (rung 2 of",
+    "gh-wrapper's ladder, and the documented write path for Relationships via --add-blocked-by).",
+    "",
+    "Research runs in the built-in `Explore` subagent type, spawned with briefs written inline in",
+    "each skill. Two mechanisms keep it from writing:",
+    "  1. HARD — Explore holds no Write, Edit, or NotebookEdit, so the timeline, tracks.yml, and",
+    "     views/ cannot be touched by a research agent at all.",
+    "  2. The brief's read-only rule, plus the write-class gate each skill runs on every returned",
+    "     payload, which discards the whole payload if surface_log shows a non-read call.",
+    "Explore DOES hold the GitHub MCP tools, so GitHub-write prevention is (2) only. A custom agent",
+    "definition with a `tools:` allowlist would make it structural, but agent definitions cannot",
+    "live inside a skill and four self-contained files was the higher priority. Do not describe a",
+    "research agent as structurally incapable of writing to GitHub. See gh-wrapper -> Research",
+    "Subagents for the portable contract; each workflow skill carries its own gate table."
+  ],
+  "permissions": {
+    "deny": [
+      "Bash(gh repo delete:*)",
+      "Bash(gh repo archive:*)",
+      "Bash(gh issue delete:*)",
+      "Bash(gh issue transfer:*)",
+      "Bash(gh release delete:*)",
+      "Bash(gh secret set:*)",
+      "Bash(gh secret delete:*)",
+      "Bash(gh workflow run:*)",
+      "Bash(gh workflow disable:*)",
+      "Bash(gh run cancel:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fd:*)"
+    ]
+  }
+}

@@ -218,6 +218,10 @@ This maps cleanly onto machinery that already exists: GitHub's `sub_issue_write`
 parent/child issues, and `gh-wrapper` already **requires** Priority, Effort, Start date and Target
 date on every issue creation. That means every thread already has the dates a Gantt chart needs —
 we've just never collected them anywhere they could be charted.
+→ **Superseded by the gh-wrapper rewrite.** It no longer names any field. The set is discovered
+per-org at call time with `list_issue_fields`, and what it requires is that *every discovered field*
+be either set or explicitly reported unset. The Gantt argument survives unchanged for this org,
+where the discovered set does include planned dates — it is just no longer a property of the skill.
 
 `tracks.yml` is the registry:
 
@@ -388,6 +392,9 @@ Notes on the tree:
 - The new-track branch is where the four required Issue Fields get collected — which is exactly
   what makes the Gantt possible. `gh-wrapper` already refuses to guess these; here the conversation
   naturally establishes them.
+  → **Partly superseded.** "Refuses to guess" still holds and is now the Iron Law. "The four
+  required Issue Fields" does not — the set is discovered per-org, and this org's four are a
+  discovery result rather than a fixed requirement.
 - **Open question:** should the question tree run *before* the briefing (as drawn) or after? Before
   means better scoping; after means the dev can see what happened before deciding what to work on.
   A middle option: show a one-line "since you left off" summary, then ask, then give the full brief.
@@ -532,6 +539,10 @@ GitHub Projects already does Gantt charts, dependency tracking, and cross-repo r
 `gh-wrapper` skill already treats Issue Fields (Priority, Effort, Start date, Target date) as the
 org's Projects-equivalent enforcement surface. Building a parallel tracking system in flat files
 means two places to look and two places to drift.
+→ **Field list superseded**; the enforcement-surface framing survives. gh-wrapper enumerates no
+fields now, and it draws a hard line the original blurred: org-level Issue Fields live on the issue
+and are a *different feature* from a Projects v2 board's same-named fields, written through
+different mutations with different node-ID spaces. "Projects-equivalent" was the wrong word for it.
 
 The strongest argument *for* doing it anyway — and I think it holds — is that the timeline captures
 something GitHub structurally cannot: **the session-level narrative.** When work started and

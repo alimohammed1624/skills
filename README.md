@@ -21,80 +21,154 @@ Each skill is a `SKILL.md` with YAML frontmatter (`name`, `description`) that Cl
 its description matches the task. The description is itself under test: does the right skill fire
 for a given phrasing, and does it stay silent when another is the better fit?
 
-There are **four** skills — the three the design specifies, plus gh-wrapper. The substrate they share
-is a plain reference file, [`.claude/.tracking/format.md`](.claude/.tracking/format.md), not a skill:
-it has no frontmatter, never triggers on its own, and is read as each skill's first step. It owns
-everything about *where things live and what shape they are* — the deterministic paths, the
-bootstrap-and-pull preflight, the `tracks.yml` schema, the timeline event format, branch naming, the
-view-regeneration rules, and what this org's Issue Fields actually are. Factoring it out keeps one
-copy instead of three; keeping it out of `skills/` keeps the skill surface matching the design.
+There are **four** skills and nothing else: the three the design specifies, plus gh-wrapper. Each is
+a single `SKILL.md` that is complete on its own — no shared reference files, no agent definitions,
+no seed assets.
 
-**What to probe there:** that the paths are always derived and never recorded anywhere; that
-`tracks.yml` stays at four fields and never accumulates issue state; that timeline lines are only
-ever appended; that a `views/` conflict is discarded and regenerated rather than hand-merged.
+Each of the three workflow skills carries **its own copy of the substrate**, under a `## The
+Substrate` heading: the deterministic paths, the bootstrap-and-pull preflight, the `tracks.yml`
+schema, the timeline event format, and what this org's Issue Fields actually are. Only the parts a
+skill uses — `/snapshot` has no write-access check, no append rules, and no view generation;
+start-work has no view generation.
+
+**This is a deliberate trade and it has a cost.** The substrate used to live in one place precisely
+so it couldn't drift. Now it is copied three ways, and the shared blocks are marked:
+
+```
+<!-- SUBSTRATE: ... shared with end-work and snapshot — keep in sync. -->
+```
+
+**What to probe:** diff the marked blocks pairwise and check that every difference is a *deliberate
+trim* rather than drift — that is now a real failure mode with no automated guard. Then, in each
+copy: that the paths are always derived and never recorded anywhere; that `tracks.yml` stays at four
+fields and never accumulates issue state; that timeline lines are only ever appended; and that a
+`views/` conflict is discarded and regenerated rather than hand-merged.
+
+*(Historical note for anyone reading old commits: this substrate was once `.claude/.tracking/format.md`,
+loaded by a repo-relative path. That path never resolved, because these skills run while the developer
+is standing in a product repo — so all three failed at their first instruction and proceeded on the
+substrate they half-remembered.)*
 
 ### start-work
 
 Owns **session lifecycle** — the only skill that opens a session, resumes one, or closes an
 abandoned one. Recovery lives here because a developer who abandons a session is by definition one
 who didn't run end-work. Preflight resolves the open session (resume under 36h, close as abandoned
-at 36h+ with `session_end {inferred:true}`), then reads the current branch as a *hint* to pre-fill
-the question tree, then asks what the session is for: continuing, starting something new, or just
-looking. "Just looking" opens nothing and writes nothing. New work creates the issue with every
-required field set and a branch named `<type>/<repo>-<issue#>-<slug>`, so the branch→thread link is
-recoverable from the name alone.
+at 36h+ with `session_end {inferred:true}`), then dispatches **Wave 1** — parallel read-only agents
+gathering what moved, what's awaiting the developer, and what blocks each thread — before asking
+anything. Intent then resolves from what the developer said, else the branch, else one question. The
+old Q1/Q2/Q3 tree collapses into **a single confirmation block**: every field beside the source it
+was read from, inferred lines marked, discovered blockers named, and the alternatives not chosen
+listed. "Just looking" opens nothing and writes nothing.
 
 **What to probe:** that a live session is resumed rather than restarted; that an abandoned session's
-synthetic close is filed under *its* month, not today's; that "just looking" really writes nothing;
-that the branch hint pre-fills without deciding; that issue creation asks rather than guessing a
-Priority or Effort; that a new track can't be created without `exit_criteria`.
+synthetic close is filed under *its* month, not today's; that "just looking" really writes nothing
+even though research ran; that the branch proposes without deciding; that **every rationale names a
+source rather than restating the value** ("High because it's important" is the failure); that a field
+with no source renders `— ask` with a labelled suggestion instead of a proposal; that silence or a
+change of subject is **not** taken as the yes; that correcting one line re-renders the whole block
+and voids the prior yes; that cited values are re-read live before writing; that a *discovered*
+blocker goes on the issue and **never** into the timeline; that a new track can't be created without
+`exit_criteria`.
 
 ### end-work
 
 Its iron law: **uncommitted or unpushed work blocks a clean handoff** — checked first, every run,
-reported at the top, grouped by repo. Critically, the check runs in **every worktree the session
-touched**, iterating `session.threads[].worktree`, not just the repo the developer is standing in.
-Write access to the tracking repo is verified *before anything is written*, so a developer without
-push rights gets a clear stop rather than events banked locally forever. It then updates issue
-statuses, runs a compliance pass over commits referencing `#N`, appends the session's events,
-regenerates the views, and pushes one commit — closing the session into `last_session` even when the
-handoff was dirty, because the boundary records when you stopped, not whether it was clean.
+reported at the top, grouped by repo. Critically, the check runs over a **derived worktree set** —
+every `session.threads[].worktree` *plus the repo you're standing in*, or with no session open, the
+current repo plus every repo on your timeline since the window. **It is never empty**, and it is
+never delegated to a subagent. Write access is verified *after the pull and before anything is
+written*. Research then runs as four parallel agents, and their findings become **one confirmation
+block** — where a bare yes covers every reversible write but **never a closure**. It pushes one
+commit, showing the diff in the same step, and closes the session into `last_session` even when the
+handoff was dirty.
 
 **What to probe:** that all three worktrees get checked in a three-repo session and a vanished
-worktree is reported rather than skipped; that the tracking clone's dirtiness stays out of the
-developer's blocker section; that no-push-access stops the run *before* any write; that a rejected
-push discards and regenerates `views/` instead of merging it; that a `Fixes #N` keyword doesn't
-auto-close without verifying real completion; that the session still closes on a dirty run.
+worktree is reported rather than skipped; **that a run with no session open still checks the current
+repo instead of silently passing**; that the tracking clone's dirtiness stays out of the developer's
+blocker section; that no-push-access stops the run *before* any write, and that a **non-fast-forward
+dry-run is not misreported as no-push-access**; that a rejected push discards and regenerates `views/`
+instead of merging it; that a `Fixes #N` keyword surfaces as a question and a **bare yes does not
+close it**; that no agent-proposed `note` lands without a commit behind it; that the session still
+closes on a dirty run.
 
 ### snapshot
 
 **Explicitly invoked only** — `/snapshot`, not "where do things stand." Three layers (current repo,
 org rollup, who did what) plus the four joins that neither source can produce alone: planned vs.
 actual, effort vs. what the work took, declared vs. encountered dependencies, and a complete org
-rollup off one `git pull`. Read-only: the single file it writes is its own cursor. Attribution comes
-strictly from author/assignee/reviewer fields and the timeline's `dev`, bots excluded, and it must
-never rank or editorialize about anyone's output.
+rollup off one `git pull`. Read-only: the single file it writes is its own cursor. The layers and
+joins run as **four parallel read-only agents**, off one field discovery the skill performs and hands
+down. Attribution comes strictly from author/assignee/reviewer fields and the timeline's `dev`, bots
+excluded, and it must never rank or editorialize about anyone's output.
 
-**What to probe:** that conversational phrasing doesn't trigger it; that it reads its cursor
-*before* offering window options; that it never comments, writes a field, or appends an event; that
-planned dates come from the issue and actual dates from the timeline and never the reverse; that a
-repo with no timeline events is called untracked rather than inactive.
+**What to probe:** that conversational phrasing doesn't trigger it; that it reads its cursor *before*
+offering window options; that it never comments, writes a field, or appends an event; that it
+**clones but never offers to create** the tracking repo, and degrades gracefully when the org has
+none; that planned dates come from the issue and actual dates from the timeline and never the
+reverse; that no agent runs its own `list_issue_fields`; that agent prose never reaches the report;
+that a partially-covered join prints its `not_covered` rather than reading as complete; that a
+not-run join prints a reason instead of vanishing; that a repo with no timeline events is called
+untracked rather than inactive.
 
 ### gh-wrapper
 
-Required sub-skill for all of the above. Narrow job: whenever a `gh` CLI command would otherwise run
-— typed by Claude, pasted by the user, or implied by a script — translate it to the equivalent
-`plugin:github:github` MCP tool call instead of shelling out. That's what keeps org-level Issue
-Field and issue-type enforcement intact. When no MCP tool covers the action, it falls back to
-running the real `gh` command directly rather than inventing a tool call or refusing outright — the
-one exception is Issue Fields and issue types, which have no `gh` fallback at all. Plain `git` is
-explicitly not `gh` and needs no translation.
+Required sub-skill for all of the above, and the only one written to be portable — it encodes no
+policy from this org or this workflow. Whenever a `gh` CLI command would otherwise run — typed by
+Claude, pasted by the user, or implied by a script — it routes the action down a three-rung ladder:
+the `plugin:github:github` MCP tool if one is loaded, else a `gh` flag, else `gh api graphql`.
+Nothing may be called impossible until all three have been walked and named. What keeps field
+enforcement intact is not the routing but runtime discovery: the field set is read with
+`list_issue_fields` at call time, never recalled from a list. Plain `git` is explicitly not `gh` and
+needs no translation.
 
-**What to probe:** that `gh` only gets shelled out to when no MCP tool exists for the action, and
-that the fallback is announced rather than silent; that issue creation is questioned rather than
-filled with a guess when a field is missing; that an option name outside the org's actual list is
-rejected; that Issue Fields/issue types are never set via a `gh` fallback; that translating or
-falling back on a merge/delete doesn't skip confirm-before-acting.
+It also distinguishes org-owned from personally-owned accounts, because Issue Fields, issue types,
+and Teams are organization-only and simply absent on a personal account — where an empty field set
+is the correct and final answer, not a discovery failure to escalate.
+
+**What to probe:** that a missing MCP tool produces a rung-2 or rung-3 attempt rather than a report
+of impossibility, and that dropping down is announced rather than silent; that issue creation is
+questioned rather than filled with a guess when a field is missing; that the valid option list is
+discovered rather than assumed, and an option outside it is rejected; that a field which resists one
+attempt is reported unset rather than approximated with a neighbouring field; that on a personal
+account it reports the feature absent instead of walking the ladder; that translating or falling
+back on a merge/delete doesn't skip confirm-before-acting.
+
+## Delegated research
+
+The multi-call GitHub research runs in parallel **`Explore` subagents**, spawned with briefs written
+inline in each skill, so the expensive lookups stay out of the main conversation and the developer
+never has to open the project board.
+
+| Skill | Briefs |
+|---|---|
+| start-work | session brief (what moved, **what's awaiting you**) · dependencies · field proposals |
+| end-work | compliance · session brief · dependencies (compare) |
+| `/snapshot` | repo+org rollup · who-did-what · planned/sizing joins · dependencies (compare) |
+
+Each skill states the **shared preamble** once — the read-only rule, the three-rung ladder, the
+GitHub traps, the return envelope — then a short brief per agent. `gh-wrapper` carries the portable
+version of the contract and the gates that apply to any caller.
+
+**The organizing rule is that a research agent is a proposer, never an actor.** Every write is
+executed by the calling skill, in the main conversation, in view of the developer. Nothing a brief
+returns is a receipt, and every payload passes a return gate before a line of it is rendered.
+
+**The guarantee is weaker than it looks, and the skills say so.** `Explore` holds no `Write`, `Edit`,
+or `NotebookEdit`, so the timeline, `tracks.yml`, and `views/` are **structurally** safe — a research
+agent cannot touch a file. But `Explore` **does** hold the GitHub MCP tools, so "no research agent
+writes to GitHub" is instruction plus return gate, not a tool restriction. Custom agent definitions
+with a `tools:` allowlist would enforce it; they cannot live inside a skill, and four self-contained
+files was the higher priority. **Anywhere this repo calls a research agent "structurally incapable"
+of a GitHub write, that is a bug.**
+
+**What to probe:** that a payload whose `surface_log` shows a write is **discarded whole** — this is
+the case that used to be impossible and is now merely denied; that a fabricated SHA is dropped and
+the event appended without `commits` (rendering "unverified") rather than `git fetch`ed into
+existence; that a hallucinated issue number is dropped and a load-bearing one turns its join not-run;
+that `must_ask` with a non-null value fails the payload; that a field name absent from this run's
+discovery is refused; that `not_covered` always prints; that an "unreachable" claim with no rung-3
+attempt behind it makes the skill re-walk the ladder itself.
 
 ## State
 
@@ -115,17 +189,24 @@ live where the clone's own git operations can reach it.
 Verified against the `msa1624` org, and worth knowing because the design doc assumes more than the
 environment provides:
 
-- **Issue Fields are exactly four**: Priority (`Urgent`/`High`/`Medium`/`Low`), Effort
-  (`High`/`Medium`/`Low`), Start date, Target date. The doc's §5 also lists **Size** and
-  **Estimate** — neither exists here. Skills must say so rather than invent them.
-- **Issue types are Task, Bug, Feature.** There is no `Epic` type; a track's parent is a `Feature`,
-  and it's a track because `tracks.yml` points at it.
-- **Relationships has no write tool** in `plugin:github:github`. Dependencies are recorded as
-  `blocked_by` timeline events; the declared side is read-only.
-- **`msa1624/tracking` does not exist yet.** The first run of any of the three skills will offer to
-  create it — with confirmation, since creating a repo is outward-facing. Bootstrap seeds
-  `README.md`, `.gitattributes` (`*.jsonl merge=union`), and an empty `tracks.yml` from
-  `.claude/.tracking/assets/`.
+- **The field set is discovered, not fixed.** each skill's *The Substrate* → *Issue Fields in this
+  Org* is the authoritative record of what `msa1624` currently defines and is the only place that
+  policy lives; it is not repeated here. What matters for testing is that skills read the set at
+  call time rather than recalling one, and that a field the org doesn't define is reported absent
+  rather than invented. `Size` and `Estimate` — which target-workflow §5 once required — are the
+  standing example: neither exists here.
+- **Relationships has no MCP write tool**, but is writable at rung 2 (`gh issue edit
+  --add-blocked-by`). Dependencies are still recorded as `blocked_by` timeline events — that is a
+  design choice about what the timeline owns, not a capability limit, and the difference is worth
+  probing.
+- **Org-only features.** Issue Fields, issue types, and Teams do not exist on a personally-owned
+  account. The tracking workflow is org-scoped by design; gh-wrapper is not.
+- **`msa1624/tracking` does not exist yet.** The first run of **start-work or end-work** will offer
+  to create it — with confirmation, since creating a repo is outward-facing. `/snapshot` never
+  offers: it clones a repo that exists and creates nothing, because cloning is sync and creating is
+  authorship. Bootstrap seeds `README.md`, `.gitattributes` (`*.jsonl merge=union`), and an empty
+  `tracks.yml` — all three described inline in start-work's and end-work's bootstrap sections, since
+  there are no asset files any more.
 
 ## Notes for testers
 
@@ -138,6 +219,13 @@ environment provides:
   rewritten), **no cached state** (nothing committed carries an issue's status, assignee, or planned
   dates), **no rankings** (no view compares people, and no duration is ever recorded), and
   **out-of-band** (the record never lives on a branch of the work it describes).
+- **The fifth, added with the autonomy work: sourced-then-accepted.** No field value is written
+  unless it has a source, the source was shown, and the developer said yes after seeing it —
+  each skill's *The Substrate* → *Established vs. guessed*. The interesting attack is not a wrong value; it is a
+  **plausible value with a rationale composed afterwards to justify it.** Probe for rationales that
+  restate the value instead of citing where it came from.
+- **`views/` and `tracks.yml` are still built only from files**, never from an agent payload. That is
+  what keeps "no cached state" true now that research produces plenty of live state worth caching.
 - The tracked deletions of `auth.js`, `middleware.js`, and `worker.js` in this repo's history are
   fixture data — sample commits for the skills to reference (e.g. "Fix memory leak in background
   worker (fixes #7)"), not application code.

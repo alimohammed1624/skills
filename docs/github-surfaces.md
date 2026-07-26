@@ -37,7 +37,9 @@ The plugin is installed and enabled in `~/.claude/settings.json` and connects
 successfully in most sessions, but **the tools do not always appear in the
 session's deferred-tool list**. When that happens, `ToolSearch` for them returns
 nothing and `gh` is the only available surface. Workflows that hard-require MCP
-will fail closed rather than degrade — see the `gh-wrapper` note at the end.
+will fail closed rather than degrade — see "Org Issue Fields are writable
+without MCP" under [Notes on this repo's setup](#notes-on-this-repos-setup) for
+the worked fallback.
 
 The tool prefix is `mcp__plugin_github_github__`, not `mcp__github__`.
 
@@ -324,14 +326,13 @@ this note claimed `-rw-r--r--`). Still worth rotating and sourcing from the
 keychain — `gh` already stores its own credentials there — since the token
 sits in plaintext regardless of file mode.
 
-**`.claude/skills/gh-wrapper/SKILL.md` has a coverage gap.** It routes `gh` calls
-to MCP by default, with a hard rule that the four org Issue Fields go through
-`issue_write(issue_fields:)` with no `gh` fallback permitted. The premise is
-technically correct — `gh` 2.96.0 genuinely has no flag for org-level Issue
-Fields. But in a session where the MCP tools don't load, that rule makes issue
-creation impossible rather than degraded. The available fallback is
-`gh api graphql`, and it's confirmed working, not just theoretical: exercised
-directly against this org's `msa1624` Priority field —
+**Org Issue Fields are writable without MCP.** `gh` 2.96.0 genuinely has no flag
+for the four org-level Issue Fields (Priority, Effort, Start date, Target date),
+so it's tempting to treat `issue_write(issue_fields:)` as the only path. Don't:
+in a session where the MCP tools don't load, that assumption makes issue
+creation *impossible* rather than *degraded*. The fallback is `gh api graphql`,
+and it's confirmed working, not just theoretical — exercised directly against
+this org's `msa1624` Priority field —
 
 ```
 mutation {
@@ -359,17 +360,16 @@ updateIssueFieldValue mutation"` — confirming this project field is a
 *mirror* of the org Issue Field, not a native project field, and the two
 must be written through different mutations with different node ID spaces.
 
-Separately, the skill undersells current `gh`. Version 2.96.0 has
+Separately, current `gh` is easy to undersell. Sub-issue hierarchy is fully
+*writable* from the CLI, not just readable: 2.96.0 has
 `gh issue create --parent/--type` and
-`gh issue edit --add-sub-issue/--remove-parent`, so sub-issue hierarchy is fully
-*writable* from the CLI, not just readable.
+`gh issue edit --add-sub-issue/--remove-parent`.
 
-The skill's Relationships row is right that `gh issue edit --add-blocked-by`
-exists, but it misses two things: the same flags exist on **`gh issue create`**
-(`--blocked-by` / `--blocking`, so a dependency can be set at creation rather
-than in a second call), and **all of these accept issue URLs, making them
-cross-repo** — which the skill never says. Given this org runs one project
-across five repos, that omission matters more than it looks.
+Relationships reach further than `gh issue edit --add-blocked-by`. The same
+flags exist on **`gh issue create`** (`--blocked-by` / `--blocking`), so a
+dependency can be set at creation rather than in a second call — and **all of
+them accept issue URLs, which makes them cross-repo**. Given this org runs one
+project across five repos, that last point matters more than it looks.
 
 ## What verification changed, and what it cost
 
