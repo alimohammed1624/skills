@@ -1,4 +1,4 @@
-# Nothing to ignore, by design.
+# No *tracking state* to ignore, by design.
 #
 # The tracking skills keep all local state outside every git repo on the machine:
 #   ~/.claude/.tracking/<org>/     the tracking clone
@@ -8,3 +8,9 @@
 # Product repos get nothing, so none of it shows up in `git status` here.
 # If you find yourself adding a state directory under .claude/, read
 # docs/target-workflow.md §2 first — it's deliberately not where state lives.
+
+# OS cruft, which is not state and has no business here either. (msa1624/skills#38)
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
