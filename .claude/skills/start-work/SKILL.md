@@ -17,8 +17,8 @@ and it may be one continuous sitting or a series of bursts.
 base resolution, paths, bootstrap procedure, cursor schema, and event format this skill depends on.
 
 **REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. It routes GitHub access down
-a three-rung ladder — MCP tool, then `gh` flag, then `gh api graphql` — and nothing is reported
-impossible until all three have been walked.
+a two-rung ladder — a `gh` flag, then `gh api graphql` — and nothing is reported
+impossible until both have been walked.
 
 ## The Iron Law
 
@@ -223,7 +223,7 @@ name. A directory called `acme-web` implies nothing about which GitHub org owns 
 git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
 ```
 
-Present → pull (B3). Missing → `search_repositories(query: "repo:{org}/tracking")`.
+Present → pull (B3). Missing → `gh repo view {org}/tracking` (a 404 means it does not exist).
 
 **B2. Bootstrap.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
 <base>/.claude/.tracking/{org}`, and say you did it and where.
@@ -231,10 +231,9 @@ Present → pull (B3). Missing → `search_repositories(query: "repo:{org}/track
 **Remote does not exist → offer to create it, and wait for a clear yes.** Creating a repo is
 outward-facing and never happens implicitly.
 
-```
-create_repository(name: "tracking", organization: "{org}", private: true,
-                  description: "Org work tracking — track registry, event timeline, generated views",
-                  autoInit: true)
+```bash
+gh repo create {org}/tracking --private --add-readme \
+  --description "Org work tracking — track registry, event timeline, generated views"
 ```
 
 Then clone it and seed three files in one commit. **The README is not optional — a shared record
@@ -331,9 +330,9 @@ Every thread has an issue, and every issue carries the org's fields, **set at cr
 
 **Discover at runtime — never hardcode:**
 
-```
-list_issue_fields(owner: "{org}")        → org fields and their valid options
-list_issue_types(owner: "{org}")         → valid issue types
+```bash
+gh api /orgs/{org}/issue-fields   # org fields and their valid options
+gh api /orgs/{org}/issue-types    # valid issue types
 ```
 
 At the last check `msa1624` defined exactly these four. **Treat this as the expected result of that
@@ -353,16 +352,27 @@ developer says otherwise, and it is a track because `tracks.yml` points at it.
 signal. If a role has no field, **say so** — never approximate it with a neighbouring field that
 happens to accept a write.
 
-**Relationships** is not an Issue Field; it is the dependencies API, writable at rung 2
+**Relationships** is not an Issue Field; it is the dependencies API, writable at rung 1
 (`gh issue edit --add-blocked-by`, URL form for cross-repo). **A dependency that research *found* is
 not one a session *hit*:** a discovered blocker goes on the issue and **nowhere else**. Only a
 blocker a session actually ran into becomes a `blocked` timeline event, which end-work writes.
 
+**Finding a candidate is not declaring one.** Research searches the org's open issues in both
+directions — Brief 4 — and searches broadly, because a blocker two repos over is the one nobody
+finds by hand. But **retrieval is not evidence.** A shared label, a shared milestone, a similar
+title, or two issues touching the same file are fine ways to *find* a candidate and no reason at all
+to *declare* an edge. What reaches Relationships is what carries a quotable **direction**: a
+sentence saying which way round the two pieces of work go. That gets written without asking and
+reported with its quote and a one-line undo — the same rule end-work applies to mirroring a
+`blocked_by`, for the same reason. A question with one sensible answer is load, not consent.
+
 ### Projects v2 board membership
 
-**Board membership is a fourth mechanism, and it is the one that fails silently.** Issue Fields,
-Milestone, and Relationships are all visible on the issue; an issue on no board looks completely
-normal, and only the people planning off that board ever notice it is missing.
+**Board membership is a fourth mechanism, and the board item's own fields — `Status` among them —
+are a fifth.** Issue Fields, Milestone, and Relationships are all visible on the issue the moment you
+look at it. The last two are not: an issue on no board looks completely normal, and only the people
+planning off that board ever notice it is missing. **They also fail independently** — the add can
+land and the `Status` write still be lost. gh-wrapper carries the full five-mechanism table.
 
 **Discover the org's projects once per run, alongside the fields** — gh-wrapper carries the ladder,
 the personal-account root, and the idempotency note:
@@ -437,6 +447,35 @@ the block is exactly the fabrication the Iron Law exists to prevent.
 **Do not seed this file at bootstrap.** Its absence is the trigger to ask; an empty `transitions: {}`
 reads as "leave everything alone" and would silently make the whole mechanism inert.
 
+### Board-native fields other than `Status`
+
+**`Status` gets a whole section because it has a lifecycle, not because it is the only one.** The
+board returns a set, and every field in that set falls under the Iron Law exactly like the org's
+Issue Fields do — filled from a source, proposed as a marked guess, or reported unset by name. The
+sections above describe `Status` at length and `Size`/`Estimate` as absent *in this org*; neither
+statement bounds the set. **If discovery returns a field this file never names, it still gets a line
+in the block.** A field nobody wrote a paragraph about is the one that goes blank.
+
+**An iteration field is the case to expect, and it is identified by `dataType: ITERATION` — never by
+its name.** Boards call it `Sprint`, `Cycle`, or `Iteration`; msa1624's board #3 calls it `Sprint`.
+Looking for a field *named* "Iteration" is how you skip one that is right there. A board with an
+iteration field files every card into a sprint, and a card with no iteration is in no sprint —
+invisible in the one view that field exists to feed, and invisible in exactly the way an empty
+`Status` is. It is board-native, so gh-wrapper writes it with `updateProjectV2ItemFieldValue`
+(gh-wrapper → *Iteration fields*), picking from `configuration.iterations`, never from
+`completedIterations` and never by title.
+
+Unlike `Status`, it needs no policy file: **the iteration whose window contains today is derived
+from the board's own `startDate` and `duration`,** so the line renders
+`← board #3: Sprint 1, today 2026-07-27 falls in its 07-27 → 08-09 window` and is covered by the
+single yes. A developer who plans work into the next sprint corrects it in four words, like any
+other line. Render it `?` only when the dates genuinely don't decide it — a create sitting on a
+sprint boundary, or a board whose iterations have lapsed.
+
+**An iteration field with no iterations configured is reported unset by name**, with the reason. That
+is the true-empty case, and it is a different sentence from a query that never asked for the values —
+gh-wrapper carries the distinction.
+
 ### Established vs. guessed
 
 A value is **established** when three things are true:
@@ -446,11 +485,18 @@ A value is **established** when three things are true:
 2. The source is **shown to the developer**, in one line, beside the value.
 3. The developer **said yes after seeing it.**
 
-All three. Missing any one, it is **guessed**, and a guessed value is asked for, never written.
+All three. Missing any one, it is **guessed** — and a guessed value is still *proposed*, marked `?`
+with the thin source it leaned on, and written once the developer accepts the block. What it is
+never is **silent**: an unmarked guess is indistinguishable from an established value, and that is
+the thing this section exists to prevent.
+
+Condition 2 is what makes this safe, and it is why filling every field costs the developer one yes
+rather than one question per field. **Skipping the field instead of guessing does not satisfy the
+bar — it just fails quietly**, and a blank field is the one failure nobody reviews.
 
 Research does not lower the bar — it moves the work. You do the looking-up; the developer does the
 accepting. What is never permitted is the middle: a plausible value with a rationale invented
-afterwards to justify it.
+afterwards to justify it, or a guess dressed as a derivation.
 
 **The order is load-bearing: source, then value. Never value, then rationale.**
 
@@ -458,7 +504,7 @@ afterwards to justify it.
 |---|---|---|
 | **Derived** | the source states the value, or a stated rule maps it | `←` and the source |
 | **Inferred** | the source is only suggestive | `?` and the source, **re-listed** in a closing line |
-| **Unsourced** | nothing establishes it, no precedent exists | `— ask`, with a suggestion labelled as one. The block cannot be accepted until it is answered. |
+| **Unsourced** | nothing establishes it, no precedent exists | for a **field value**: still a best guess, `?`, with the thin source named — the block stays acceptable. For a **structural choice** (which repo, which board, an undefined policy): `— ask`; there is nothing to guess from and picking one invents a fact. |
 
 ### Event timeline
 
@@ -563,7 +609,7 @@ flowchart TD
     GATE1 --> INTENT{Intent — from what they said,<br/>then the branch,<br/>then ask once}
 
     INTENT -->|Continuing| BLOCK
-    INTENT -->|New work| W2["WAVE 2:<br/>field proposals"]
+    INTENT -->|New work| W2["WAVE 2 — parallel:<br/>field proposals + dependency scan"]
     INTENT -->|Just looking| BROWSE["Full org briefing.<br/>No session. Nothing written."]
 
     W2 --> GATE2["Return gate"] --> BLOCK
@@ -586,7 +632,7 @@ are in scope — it explains the presence or absence of the branch hint before a
 reads the tracking repo until its final step, and a developer without push rights still gets a full
 briefing.
 
-Get the developer's handle with `get_me()`.
+Get the developer's handle with `gh api user --jq .login`.
 
 ### Step 2: Resolve the Session
 
@@ -725,7 +771,7 @@ reads *instead of* going to the project board. Give each the shared preamble bel
 Also grep locally, which no subagent should do for you: this branch's timeline events, and pending
 handoffs per *Handoff scan* above (state the bound).
 
-Discover the fields once here — `list_issue_fields(owner: "{org}")` — and pass the result into both
+Discover the fields once here — `gh api /orgs/{org}/issue-fields` — and pass the result into both
 briefs. **No subagent runs its own discovery**; two discoveries can disagree and the block would show
 one schema built from two.
 
@@ -738,8 +784,9 @@ block can carry the board line with a source instead of the issue quietly landin
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
-create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+NEVER call setIssueFieldValue, addProjectV2ItemById,
+updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
+edit/create/close/comment, gh project item-add/item-edit, or
 gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
 never as an action. You CAN call these tools; not calling them is the rule you are
 being held to.
@@ -747,11 +794,9 @@ DO NOT read the timeline, status.json, or tracks.yml. Everything you must compar
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 destroys the comparison.
 
-Ladder: MCP tool → gh flag → gh api graphql. Never report something unreachable
-without walking all three and naming all three. MCP missing is not a capability gap:
-say so once (rung_reason "mcp_absent") and work rungs 2-3 for the whole run. The
-prefix is mcp__plugin_github_github__, not mcp__github__.
-Cross-repo blocker rollups start at rung 3 by ROUTING, not escalation — one GraphQL
+Ladder: gh flag → gh api graphql. Never report something unreachable
+without walking both and naming both.
+Cross-repo blocker rollups start at rung 2 by ROUTING, not escalation — one GraphQL
 query costs 1 point where the REST equivalent is 18 requests. Say rung_reason "routing".
 NEVER read issue_dependencies_summary to decide whether something is blocked; it lags
 a write by ~1s and returns 0. Read dependencies/blocked_by or GraphQL blockedBy.
@@ -807,19 +852,26 @@ never reported as having nothing to report.
 > blocker_state}`.
 >
 > `ready_now` and `still_blocked` are the point: they let the briefing say where things stand without
-> anyone opening the board. **Never infer a dependency** from a shared label, a shared milestone, a
-> similar title, or two issues touching the same file — only declared relationships and quoted prose.
+> anyone opening the board.
+>
+> **Never *declare* a dependency you inferred.** A shared label, a shared milestone, a similar title,
+> or two issues touching the same file establish nothing, and nothing built from them enters
+> `declared[]` — that key carries only what the dependencies API returned. Directional prose goes to
+> `prose_hints[]`, quoted.
+>
+> **Searching for new candidates is Brief 4's job, and its results never arrive here.** This brief
+> reports the graph as it stands.
 
 #### The return gate — run before rendering a line
 
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — that is a permissions or transient failure, not a hallucination. |
-| **Discovery** — every field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
+| **Discovery** — every field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
 | **Reference form** — matches `^[\w.-]+/[\w.-]+#\d+$` | Reject the record rather than guessing the owner. |
-| **Ladder honesty** — any unreachability claim is backed by rungs 1, 2 **and** 3, or `mcp_absent` | Unproven. **Re-walk the ladder yourself** before reporting anything unset. |
+| **Ladder honesty** — any unreachability claim is backed by **both** rungs | Unproven. **Re-walk the ladder yourself** before reporting anything unset. |
 | **Coverage** — `not_covered[]` is printed | Never omit it. |
 
 **Failure modes.** No return or prose → retry **once** narrowed, then run the inline procedure below
@@ -908,9 +960,20 @@ enforce its iron law — would point at a directory this skill never verified ex
 `~`-relative, never `<base>` plus a guessed directory name: a repo's local directory need not match
 its GitHub name, so read the path from the set rather than composing it.
 
-**Wave 2 — dispatch the field brief now**, once the work has a name. It cannot merge into Wave 1: it
-depends on what the developer just decided, and running it speculatively would propose values for an
-issue that may never exist.
+**Wave 2 — dispatch Briefs 3 and 4 now, in one message, in parallel**, once the work has a name.
+Neither can merge into Wave 1: both depend on what the developer just decided, and running them
+speculatively would research an issue that may never exist. Brief 4 additionally needs a title to
+draw search terms from, which does not exist until here.
+
+**Run the sibling enumeration once, here, and pass the result into both briefs.** One GraphQL
+request returns the parent, its sub-issues, and every sibling's declared edges — see gh-wrapper's
+*Searching Issues*. This is the discover-once rule that already governs the field schema: two agents
+enumerating independently can return two sibling sets, and the block would show one.
+
+**Briefs 3 and 4 run under opposite defaults, which is why they are two briefs.** Brief 3 must fill
+every row — returning `null` because the evidence felt thin is a contract violation. Brief 4 must
+drop every row that lacks a quoted direction, and an empty return is the correct answer more often
+than not. One agent cannot hold both instructions without one of them decaying.
 
 #### Brief 3 — field proposals *(Wave 2)*
 
@@ -933,44 +996,170 @@ Shared preamble, plus:
 > |---|---|---|
 > | `established` | a verbatim maps to exactly one valid option, **no interpretation** | the value |
 > | `precedent` | not established, but siblings under the same parent agree | the precedent value |
-> | `must_ask` | nothing established, no precedent, **or any interpretation required** | **`null`**, best guess in `candidates[]` |
+> | `inferred` | nothing established, no precedent, **or any interpretation required** | **your best guess**, runner-up in `candidates[]` |
 > | `role_unavailable` | the org defines no field for this role | `null`, role named in `unfilled_roles` |
 >
-> **A non-null `proposed` with `must_ask` is a contract violation and fails the whole payload** —
-> that combination is guessing and then labelling the guess.
+> **Every field gets a value. `role_unavailable` is the only class that may propose `null`** — there
+> is no field to fill, so there is nothing to guess. Returning `null` for `inferred` because the
+> evidence felt thin is a contract violation and fails the whole payload: thin evidence is what
+> `inferred` is *for*, and the developer correcting one marked line is cheaper than answering a
+> question for every field.
 >
-> The row most likely to go wrong: "by the 8th of August" *feels* established, but turning it into a
-> calendar date is an interpretation — which year, and is "by the 8th" the 8th or the 7th? So it is
-> `must_ask` with `candidates: ["2026-08-08"]`, which renders as a one-keystroke question rather than
-> a silent assumption.
+> **The obligation that replaces "don't guess" is `rationale`.** An `inferred` value must name what
+> it was inferred *from* — the sibling, the parent, the phrase in the conversation, the convention.
+> An inferred value with no traceable rationale is a fabrication, and that still fails the payload.
+>
+> The row that shows the shape: "by the 8th of August" needs interpretation — which year, and is "by
+> the 8th" the 8th or the 7th? It is `inferred`, `proposed: "2026-08-08"`, with the reasoning in
+> `rationale` and `"2026-08-07"` in `candidates[]`. It renders as a marked line the developer can
+> overturn in four words, not as a question they must answer before anything can happen.
 >
 > **`rationale` names a source; it never restates the value.** "High because it's important" is not a
 > rationale — "parent #38 is High, sibling #43 is High" is. **Account for every field discovery
-> returned**; a field with nothing to say is still a row, `must_ask`, with an honest rationale.
+> returned**; a field with nothing solid to say is still a row, `inferred`, with an honest rationale
+> naming the weak source it leaned on.
 > `Milestone` and `Relationships` are **not** Issue Fields — never return them in `fields[]`. Cap
 > sibling reads at `max_siblings`; precedent from one sibling is not precedent.
+>
+> **Relationships are not this brief's output.** Brief 4 owns every dependency proposal, in both
+> directions. Return none here — two briefs proposing edges is two sets to reconcile in a block that
+> shows one.
 
-Add one gate for this payload: **Provenance** — anything bound for a write path carries
-`provenance: "established"` and its verbatim really appears in this conversation. `precedent` and
-`must_ask` reach the confirmation block only, never a write. On failure, strip the value and convert
-it to an ask; never write it and never quietly drop it.
+Add one gate for this payload: **Provenance** — every non-`role_unavailable` row carries a non-null
+`proposed` and a `rationale` naming a real source, and any row claiming `established` has its
+verbatim really appearing in this conversation. **All four classes reach a write; the developer's
+yes is what authorizes them.** What the gate enforces is *labelling*, not suppression: a row
+claiming `established` on an interpreted value is demoted to `inferred` and rendered `?` — never
+dropped, never silently promoted.
+
+#### Brief 4 — dependency scan *(Wave 2)*
+
+Shared preamble, plus:
+
+> **Purpose.** Search the org's open issues for work this thread might depend on, and work that might
+> depend on it. **Both directions.** Return only what carries a quoted direction.
+>
+> **INPUT you supply:** `org`, `repo`, `parent`, `siblings[]` (this run's single enumeration, with
+> their declared edges), `issue_intent` (title, artifacts), `terms[]`, `established[]`,
+> `already_declared[]` (Brief 2's `declared[]` if this thread has one), and
+> `caps {queries: 3, first: 20, page: 1}`.
+>
+> **`terms[]` is supplied. Never invent one.** Morphological variants of a supplied term are fine; a
+> new concept is not. An agent that chooses its own search terms and then reports what they found has
+> sourced both sides of the comparison, which is the thing the preamble forbids one paragraph up.
+>
+> **Run at most three searches, page one only.** One term search across the org, and up to two
+> reference searches for literal mentions of the parent and the siblings. Never open a cursor. See
+> gh-wrapper's *Searching Issues* for the query shapes — prefer GraphQL by routing, because it
+> returns each hit's `blockedBy`/`blocking` in the same request.
+>
+> **`data`:** `scanned` (int — how many distinct issues the queries returned), `queries[]` —
+> `{shape, query, scope, returned, page}`, `written {blocked_by[], blocking[]}`,
+> `artifact_only` (int), `discarded` (int).
+>
+> Each entry in `written` is `{issue, title, state, url, evidence_class, evidence_quote,
+> evidence_source}`. Every `blocking[]` entry additionally carries `lands_on` — the assignee or
+> author of the issue the edge would appear on.
+
+##### The bar — what counts as a real dependency
+
+> A search cannot certify a dependency. A **human statement of direction** can. So the bar is:
+> *someone said this work comes after, or before, that work — and the sentence can be quoted.*
+>
+> | `evidence_class` | What it is | Admissible? |
+> |---|---|---|
+> | `ordering_prose` | Directional language naming this work or its artifact, quoted verbatim from the candidate's title, body, or a comment — "blocked on X", "waiting on X", "after X lands", "unblocks X" | **written** |
+> | `explicit_reference` | The candidate literally contains the parent's or a sibling's `owner/repo#N` **inside a directional sentence** | **written** |
+> | `conversation_ordering` | Ordering language in `established[]` — "after the API lands", "once #43 is in" | **written** |
+> | `declared_edge` | The candidate is `blockedBy`/`blocking` the parent or a sibling **and** a quote from either side names the same concrete artifact this work touches | **written** |
+> | `named_artifact` | Both issues name the same endpoint, table, header, module, type, or flag — nothing directional | **not written** — counted in `artifact_only` |
+> | — | shared label · shared milestone · similar title · same repo · same file · "same area" | **discarded** — counted, never returned |
+>
+> **`evidence_quote` is mandatory and non-empty on every written entry**, and the surface it came
+> from appears in `surface_log`. A class name with no quote behind it is exactly the inference this
+> bar exists to prevent.
+>
+> **A bare `declared_edge` is not enough on its own.** "The sibling is blocked by #43, so this one is
+> too" is a rationalization this skill names elsewhere. A sibling's blocker is a strong retrieval
+> signal, not proof this work inherits it — hence the conjunction in the table: the graph edge **plus**
+> a quote naming a shared concrete artifact.
+>
+> **You may search by anything; you may cite almost nothing.** Searching by shared label is
+> retrieval, and retrieval is free. A shared label in `evidence_quote` is a contract violation.
+>
+> **`blocking[]` is the expensive direction.** That edge lands on someone else's issue, on their
+> board, in front of someone who is not in this conversation. Same bar, no exceptions, and `lands_on`
+> is always filled.
+>
+> **Nothing in `already_declared[]` is a candidate** — it is already an edge. Neither is the parent, a
+> sibling, or the thread itself. **Closed issues are never written**; a closed `named_artifact` hit
+> counts toward `artifact_only` with its close date, because "this may already be done" is worth one
+> line.
+>
+> **Zero is the correct answer more often than not.** Return both `written` lists empty with
+> `scanned` populated. Do **not** pad the return to look useful, and **do not return the discarded
+> issues** — a near-miss list is the noise the caps exist to prevent.
+
+Add three gates for this payload:
+
+| Gate | On failure |
+|---|---|
+| **Evidence** — every `written` entry carries an `evidence_class` from the closed enum above, a non-empty `evidence_quote`, and a `surface_log` entry for where the quote was read | **Drop that entry** and say one was dropped. A candidate whose evidence is a class name with no quote is an inference wearing a schema. |
+| **Direction** — every `blocking[]` entry is `ordering_prose`, `explicit_reference`, `conversation_ordering`, or `declared_edge`, and carries `lands_on` | **Drop it to `artifact_only`.** Never write an edge onto a third party's issue on evidence that would not survive being read aloud to them. |
+| **Bounds** — `queries[]` has at most 3 entries and every `page == 1`; nothing in `written` appears in `already_declared[]` | Truncate and say the scan came back over-broad. A payload that paginated is a payload that went looking for a weaker match. |
+
+**Keep both payloads whole until the write is done.** The block renders one compressed line per
+field, and that line is not what the issue body is built from — the body is rendered from Brief 3's
+`rationale`, `provenance`, and `candidates[]`, and from Brief 4's `evidence_class`, `evidence_quote`,
+and `lands_on`. Consuming a payload down to its rendered line is the one thing that makes
+*Field provenance* below unfillable, and the loss is invisible at the moment it happens: the block
+still looks right.
 
 Then write every field the discovery returned:
 
+```bash
+# rung 1 — title, body, type, parent link, assignee, and dependencies
+gh issue create -R {org}/<repo> --title "..." --body "..." \
+  --type "<discovered-type>" --parent <parent-number-or-URL> \
+  --assignee "@me" \
+  --blocked-by <numbers-or-URLs> --blocking <numbers-or-URLs>
+
+# rung 2 — org Issue Fields have no gh flag; set them all in one mutation
+gh api graphql -f query='mutation { setIssueFieldValue(input: {
+  issueId: "I_..."
+  issueFields: [
+    { fieldId: "IFSS_...", singleSelectOptionId: "IFSSO_..." },
+    { fieldId: "IFD_...",  dateValue: "YYYY-MM-DD" }
+  ]}) { issue { id } } }'
 ```
-issue_write(method: "create", owner, repo, title, body, type: "<discovered-type>",
-            issue_fields: [
-              {field_name: "<discovered-field>", field_option_name: "<option-from-discovery>"},
-              {field_name: "<discovered-date-field>", value: "YYYY-MM-DD"}
-            ])
-sub_issue_write(method: "add", owner, repo, issue_number: <parent>, sub_issue_id: <new issue id>)
-```
+
+The field and option ids come from this run's discovery — never a remembered list. Verify after
+writing: `gh api /repos/{org}/<repo>/issues/<n> --jq '.issue_field_values'`.
+
+**`--assignee "@me"` is the default and needs no evidence** — the developer starting the work is the
+obvious owner, and an unassigned issue is the same kind of quiet blank as an unset `Status`. Omit it
+only when the conversation names someone else, in which case that name replaces `@me` rather than
+joining it. The assignee line still appears in the block like everything else.
+
+**The dependency flags take the numbers from Brief 4's `written{}`** — never from `artifact_only`,
+which is a count of things the scan deliberately did not write. Both flags accept issue URLs, which
+is what makes them work across repos. Drop each flag entirely when its list is empty — an empty
+`--blocked-by` is not the same as no flag. Verify with the **list** endpoint,
+`gh api /repos/{org}/<repo>/issues/<n>/dependencies/blocked_by`, never
+`issue_dependencies_summary`, whose counter lags the write by about a second and will read `0` on a
+dependency you just created.
+
+**Every written edge carries its quote into the issue body.** The `Field provenance` section
+reproduces the `evidence_quote` verbatim beside each dependency, the same way it names the source
+under each field — the section is specified below, and rule 3 of the block says why it outlives the
+confirmation. This is what survives a developer who skimmed, and it is the only thing that lets
+someone a month from now tell a searched edge from a hand-declared one.
 
 Then, if the block's `Project` line was accepted, add the issue to the board — **this does not happen
-as part of creating the issue**, and there is no MCP tool for it (rung 1 is absent):
+as part of creating the issue**:
 
 ```bash
-gh project item-add <number> --owner {org} --url <new issue URL>   # rung 2
+gh project item-add <number> --owner {org} --url <new issue URL>
 ```
 
 **And then set its `Status`, because the add does not.** The item-add returns the item id; resolve
@@ -986,10 +1175,103 @@ new-thread case — and `issue_created` when an issue is created with no branch.
 item, not both**; a thread that goes straight to work never passes through `Backlog`, and writing it
 there first would put a state on the board that was never true.
 
-**Account for every field discovery returned** — every one appears in the block, with a source. Never
-guess one, never silently skip one. **The same applies to the project**: an issue left off a
-discovered board is reported, never quietly omitted, and an issue *on* the board whose `Status`
-went unset is worse — it looks planned and is not.
+**Account for every field discovery returned** — every one appears in the block, filled, with a
+source. Never guess one *silently*, never silently skip one; a marked guess is the default and an
+unfilled field is the exception that has to justify itself. **The same applies to the project**: an
+issue left off a discovered board is reported, never quietly omitted, and an issue *on* the board
+whose `Status` went unset is worse — it looks planned and is not.
+
+#### `Field provenance` — the issue body
+
+**The body is the durable half of the record, and it is written for a different reader than the
+block.** The block is read in ten seconds by someone who was in the conversation and already knows
+why the work exists. The body is read a month later by someone who wasn't — reviewing the thread,
+auditing a date, or wondering why an edge landed on their issue. That asymmetry is why the two
+surfaces are not the same length, and why compressing the body to the block's one-line sources
+throws away the only copy of the reasoning that survives.
+
+Below the description of the work, the created issue's body carries this section:
+
+```markdown
+## Field provenance
+
+Auto-filled at creation. Each entry names the source the value came from, not a
+restatement of the value. `?` = inferred: the source was suggestive, not decisive.
+
+### Fields
+Discovery returned 4 issue fields; 4 filled, 0 unfilled. Board fields are under
+**Board** below — a different mechanism, counted separately.
+
+- **Priority** — `High` · precedent
+  Parent #38 is High; sibling #43 (refund webhook retries) is High.
+- **Effort** — `Medium` ? inferred
+  4 of 5 siblings under #38 carry Medium. Runner-up: `Small` — this thread
+  touches one endpoint, where the Medium siblings each touched two or more.
+- **Start date** — `2026-07-26` · established
+  Today.
+- **Target date** — `2026-08-08` ? inferred
+  From "by the 8th of August", said when the thread was opened. Read as the
+  8th of August 2026. Runner-up: `2026-08-07`, if "by the 8th" meant the day
+  before it.
+
+### Relationships
+Scanned 34 open issues across 3 queries, page one each. 2 edges written;
+3 named the same artifact without stating a direction; 29 discarded.
+
+- **Blocked by msa1624/api#43** — declared_edge
+  > "the refund endpoint shape is settled here before anything calls it"
+
+  #43's body. #43 is also a declared blocker of sibling #47.
+- **Blocks msa1624/web#33** — ordering_prose · lands on @priya
+  > "waiting on refund idempotency before the retry banner"
+
+  #33's body. This edge appears on #33's blocked-by list, not just here.
+
+### Board
+Discovery returned 2 board fields; 2 filled, 0 unfilled.
+
+- **payments-board (#2)** — the only project in msa1624.
+- **Status `In Progress`** — `status-policy.yml`: `branch_created → In Progress`.
+  A branch was cut with this issue, so it does not pass through Backlog.
+- **Sprint `Sprint 1`** — the board's current iteration (field `Sprint`,
+  `dataType: ITERATION`): today (2026-07-27) falls in its 07-27 → 08-09 window.
+  Runner-up: `Sprint 2`, if the work were planned to start after the 9th.
+  Resolved by iteration id, not by title.
+```
+
+**This section records reasoning, never outcomes.** It is written by `gh issue create`, which runs
+*before* the board add and the `Status` write — so a line claiming the issue was added to a board is
+asserting something the body cannot observe. Write what was decided and what it was decided from. No
+checkmarks, no "added to". Whether the writes landed is a different job, already covered by the
+verify calls above and by the report to the developer at the end.
+
+**Length is bounded by discovery, not by judgment.** One entry per field discovery returned, one per
+written dependency, one scan-accounting line, one per board mechanism in play. Nothing else. That
+bound is what keeps "fuller than the block" from becoming padding — a section nobody finishes reading
+protects nobody.
+
+Six rules govern what goes in an entry:
+
+1. **A rationale names a source; it never restates the value.** The same rule Brief 3 runs under —
+   "High because it's important" is a restatement, "parent #38 is High, sibling #43 is High" is a
+   source. It does not relax because there is more room here.
+2. **Every `inferred` entry names its runner-up and the condition that would select it.** This is the
+   one thing the block genuinely cannot afford and the body can, and it is the thing a later reader
+   cannot reconstruct: the value is on the issue, the second choice is nowhere.
+3. **Every written edge reproduces its `evidence_quote` verbatim**, as a blockquote, with the surface
+   it was read from named underneath. A paraphrase here is the failure this rule exists to prevent —
+   a month on, nobody can tell a searched edge from a hand-declared one except by the quote.
+4. **A `blocking` edge names `lands_on`.** The person most surprised by an edge is the one it landed
+   on, and this issue is where they will come to find out why.
+5. **The scan is three counts on one line** — `scanned`, `artifact_only`, `discarded`. Brief 4 is
+   contracted not to return the discarded issues, so the count is all there is to render, and that
+   is the correct amount. A near-miss list is the noise the caps exist to prevent.
+6. **A role with no field is named, not omitted.** "The org defines no sizing field" is a fact worth
+   recording; silence reads as "nobody had to decide", which is a different and false statement.
+
+**The section is written once, as part of the create.** start-work does not rewrite an issue body —
+not to add the board outcome, not to correct a field after the fact. That is end-work's surface, and
+end-work puts its provenance in the comment it already posts.
 
 #### The confirmation block
 
@@ -1009,33 +1291,72 @@ Creating msa1624/api#52 — refund idempotency
   Priority     High        ← parent #38 is High; sibling #43 is High
   Effort     ? Medium      ← 4 of 5 siblings under #38 carry Medium
   Start date   2026-07-26  ← today
-  Target date  — ask       ← you said "by the 8th of August"; I won't turn that into a
-                             date for you. 2026-08-08?
+  Target date? 2026-08-08  ← you said "by the 8th of August"; read as the 8th, this
+                             year. Say "the 7th" and I'll change it.
   Type         Task        ← sub-issue of a Feature
-  Blocked by   #43 (open)  ← #43 owns the refund endpoint shape.
-                             Goes on the issue only, not the timeline.
+  Assignee     @me         ← default; name someone else and they get it instead
+  Blocked by ? api#43 (open)        ← #43 owns the refund endpoint shape.
+                                      Goes on the issue only, not the timeline.
+  Blocked by   platform#61 (open)   ← #61's body: "the /refunds retry path is unsafe
+                                      until idempotency keys land"
+  Blocks       web#33 (open)        ← #33's body: "waiting on refund idempotency
+                                      before the retry banner". Lands on #33's
+                                      blocked-by list, which @priya reads.
   Project      payments-board (#2)   ← the only project in msa1624; #52 would not be
                                        on it. Board membership is separate from the
                                        fields above and is not set by creating the issue.
   Status       In Progress ← status-policy.yml: branch_created → In Progress. Adding
                              to the board does not set this; the branch is being cut
                              now, so #52 does not pass through Backlog.
+  Sprint       Sprint 1    ← the board's current iteration; today (2026-07-27) falls
+                             in its 07-27 → 08-09 window. Say "next sprint" to move it.
 
-  Discovery returned 4 fields; all 4 are above. No role went unfilled.
-  ? = inferred, not read off a source. One line: Effort.
+  Discovery returned 4 issue fields and 2 board fields; all 6 are above, all 6
+  filled. No role went unfilled.
+  ? = inferred, not read off a source. Three lines: Effort, Target date, Blocked by api#43.
+  3 more open issues name "POST /refunds" without saying which way round —
+  say "show them" if you want them.
 
   Branch    feat/api-52-refund-idempotency in ~/work/api   ← from #52's title
   Session   new, 1 thread, mode resume_same
 
-Researched: parent #38, 3 siblings, 14 timeline events in payments-v2, 6 open issues
-mentioning "refund". 0 writes so far.
+Researched: parent #38, 3 siblings, 14 timeline events in payments-v2. Scanned 34 open
+issues in msa1624 across 3 queries, first page each — 3 carried a quoted direction.
+0 writes so far.
 Also available: 2 other in-flight threads (platform#12, web#31), 1 handoff from @ali
 on api#48 (scanned June and July), or something else entirely.
 
-→ Yes creates #52 with those values, links it under #38, records the #43 dependency on
-  the issue, adds it to payments-board and sets its Status, cuts the branch, and opens
-  the session. Or correct any line in plain language.
+→ Yes creates #52 with those values, assigns it to you, links it under #38, records the
+  api#43 and platform#61 blockers and the web#33 reverse edge on the issue, adds it to
+  payments-board and sets its Status, cuts the branch, and opens the session. Or correct
+  any line in plain language — "drop 61" removes one.
 ```
+
+**The board lines come from discovery, not from this example.** `Status` and `Sprint` appear above
+because that board defines them, and `Sprint` is labelled with **the name discovery returned**, not
+with its dataType. A board that defines neither renders neither; a board that defines four board
+fields renders four. The count line is what ties the block to the call —
+*"4 issue fields and 2 board fields"* is checkable against what discovery returned, and a block whose
+counts don't match its lines is a block missing a field.
+
+**The dependency lines are written lines like any other.** They sit inside the `Creating #52` region
+because that is where everything the yes will write lives, and each carries the sentence it was read
+from — not a paraphrase of it. The `?` on `api#43` is the ordinary inferred marker: that one came
+from a sibling's interface rather than a quoted sentence.
+
+**The artifact-only line states a fact and asks nothing.** It is one line, it never becomes a list
+unless the developer asks, and there is no equivalent line for what the scan discarded. A bar is a
+bar, not a fold — offering to unfold it reintroduces the twelve-line block the caps exist to prevent.
+
+**When the scan clears nothing, say so in one line** — *"Scanned 34 open issues in msa1624 across 3
+queries; none carried a quoted direction."* Silence reads as "didn't look", which costs the developer
+the exact thing the scan is for.
+
+**Ask for the yes through `AskUserQuestion`, once.** Render the block, then put a single question
+under it — *"Create #52 with these values?"* — with two options: **Yes, create it** and **Let me
+correct a line**. Not one question per `?` line, and not a question per field: the marking and the
+provenance section are what buy the right to ask once. A developer who picks the second option
+replies in plain language and lands in *Corrections* below.
 
 For a resume, the same shape with the session's standing instead of a creation plan — thread, track,
 last event, what's blocking, what moved since the last wrap-up, and what's awaiting them.
@@ -1044,17 +1365,30 @@ last event, what's blocking, what moved since the last wrap-up, and what's await
 right to ask for one yes instead of six:
 
 1. **Source first, value second.** Build each line by reading a source and taking the value off it.
-   If no source produces a value, the line renders `— ask` **with a labelled suggestion**, and the
-   block cannot be accepted until that line is answered. A rationale composed after choosing a value
-   is not a source — "High because it's important" is a restatement, not a citation.
-2. **Two marked classes.** `←` derived — the source states it, or a stated rule maps it. `?`
-   inferred — the source is only suggestive. **Re-list the inferred lines in one closing line**, so a
-   developer skimming gets "one line to check" rather than six lines to audit.
-3. **Provenance outlives the confirmation.** The created issue's **body** carries a `Field provenance`
-   section reproducing these source lines verbatim. This is the strongest of the four, because it is
-   the only one that survives a developer who didn't read carefully — and it is auditable a month
-   later. (start-work creates bodies, so this is legal here; end-work must not rewrite bodies and
-   puts the same provenance in the comment it already posts.)
+   If no source produces a value cleanly, the line still renders a **best guess marked `?`**, with
+   the weak source named — and the block is acceptable exactly as it stands. A rationale composed
+   after choosing a value is not a source — "High because it's important" is a restatement, not a
+   citation, and a `?` line with no citable source at all is a fabrication, not a guess.
+2. **Two marked classes, and every line is one of them.** `←` derived — the source states it, or a
+   stated rule maps it. `?` inferred — the source is only suggestive. **No *field* line renders
+   `— ask`, and none is blank** — a marked guess the developer can overturn in four words beats a
+   question they must answer before anything happens. `— ask` survives only on the structural lines
+   (repo, project, an undefined policy), where there is no source to guess from and picking one
+   invents a fact rather than proposing a default. **Re-list the inferred
+   lines in one closing line**, so a developer skimming gets "three lines to check" rather than a
+   block to audit.
+3. **Provenance outlives the confirmation.** The created issue's **body** carries the
+   `Field provenance` section specified above. This is the strongest of the four, because it is the
+   only one that survives a developer who didn't read carefully — and it is auditable a month later.
+   (start-work creates bodies, so this is legal here; end-work must not rewrite bodies and puts the
+   same provenance in the comment it already posts.)
+   **It is not a copy of the block.** The block compresses each field to one line for a reader
+   deciding in ten seconds; the body carries the reasoning underneath — what an inferred value was
+   inferred from, and what the runner-up was. Rendering the block's lines into the body satisfies the
+   letter of this rule and discards the thing it exists to preserve.
+   **Every dependency written by the scan appears there too, with its quote.** An edge found by
+   searching and an edge someone declared by hand are indistinguishable on the issue a month later
+   unless the quote is on the record — and the searched one is the one a reader would want to check.
 4. **Silence is not consent, and neither is a change of subject.** Only an affirmative *in reply to
    this block* is a yes. A reply naming a field is a correction. A reply about something else is
    neither — re-surface the block once, then drop it having written nothing.
@@ -1065,10 +1399,14 @@ right to ask for one yes instead of six:
   *"that's not payments-v2, it's the auth track"*, *"no, #43 doesn't block it"*.
 - **Re-render the whole block, not the changed line.** Mark the corrected line `← you`, and re-derive
   everything downstream of it — changing the repo changes the branch name; changing the track changes
-  the parent, which invalidates the Priority and Target date sources, so those re-render as `— ask`
-  or get re-researched.
+  the parent, which invalidates the Priority and Target date sources, so those get re-researched
+  against the new parent and re-render `?` if the new source is only suggestive.
 - **A correction that changes track, parent, or repo re-dispatches Wave 2.** Nothing else does — don't
   spend a research round trip on "make it Low".
+- **Dropping a dependency is a correction like any other, and it is four words:** *"drop 61"*,
+  *"61 doesn't block it"*, *"show them"* to expand the artifact-only line. A dropped edge re-renders
+  the block without it; a promoted one from that expanded list renders `← you`. **Neither
+  re-dispatches Wave 2** — the candidates are already in the payload.
 - An ambiguous correction gets **exactly one question, scoped to that line.** Never re-open the whole
   block as a menu.
 - **A fresh yes is required after any re-render.** The previous yes was for a different block.
@@ -1076,13 +1414,18 @@ right to ask for one yes instead of six:
 #### Immediately before writing
 
 **Re-read live every issue whose value the block cited.** For the block above that is one
-`issue_read` on #38 and one on #43. A research result is a cache of live state for the interval
-between dispatch and write — bounded, but real. If a cited value changed in that interval, do not
-write: re-render that line and ask again.
+`gh issue view` on #38, and one each on #43, platform#61, and web#33. A research result is a cache of
+live state for the interval between dispatch and write — bounded, but real. If a cited value changed
+in that interval, do not write: re-render that line and ask again.
+
+**A searched dependency is the stalest line in the block.** It came from an asynchronous index rather
+than a structural walk, so the issue may have closed, or the quoted sentence may have been edited
+out from under it. Re-read every dependency in both directions and confirm the quote still appears.
+A quote that no longer exists is not a dependency — drop the line and say it was dropped.
 
 **If a role has no field, say so.** Never approximate it with a neighbouring field that happens to
 accept a write — that records a different field and puts a fabricated value where someone else will
-read it. If a write fails, walk the ladder (gh-wrapper rungs 2–3) before reporting anything unset.
+read it. If a write fails, walk the ladder (gh-wrapper's rung 2) before reporting anything unset.
 
 **On a personally-owned account there are no Issue Fields at all.** Discovery returning nothing
 there is the correct and final answer, not a failure to escalate. This workflow is org-scoped by
@@ -1124,10 +1467,15 @@ BEFORE appending any event:
 2. GATED:     every agent payload passed the return gate
 3. ACCEPTED:  the developer said yes to the block AS RENDERED.
               A correction voided the previous yes; re-render and get a new one.
-4. ACCOUNTED: every discovered field is set from a source, or was rendered `— ask`
-              and answered — AND the discovered project is linked or reported
-              unlinked, AND its Status is transitioned, no-op'd, or reported by name
-5. FRESH:     every cited value re-read live since the block was shown
+4. ACCOUNTED: every discovered field carries a value — derived `←` or guessed `?`,
+              each with a named source — AND the issue has an assignee, @me unless
+              the developer named someone — AND the discovered project is linked or
+              reported unlinked, AND its Status is transitioned, no-op'd, or
+              reported by name — AND the dependency scan is accounted for: every
+              written edge shown with its quote, or one line naming how many
+              issues were scanned and that none carried a quoted direction
+5. FRESH:     every cited value re-read live since the block was shown, including
+              every dependency in both directions and the quote behind it
 6. ONLY THEN: write
 
 Skip any step = writing a record of a session that didn't happen that way
@@ -1142,6 +1490,13 @@ Then, in order:
    already the policy's `resumed` option, transition it and show the line in the block. This is the
    case that catches a thread someone parked in `Backlog` and is now actively working. If the policy
    has no `resumed` key, or the item is already there, do nothing and say nothing.
+
+   **Claim it if nobody has.** A resumed issue with an empty `assignees` gets
+   `gh issue edit N -R {org}/<repo> --add-assignee "@me"`, shown as a line in the block like every
+   other write — picking work up and leaving it unowned is the same blank as creating it unassigned.
+   **An issue already assigned to someone else is never reassigned here**, not even when they are
+   idle and you are doing the work: taking someone's issue is a handoff, it is `end-work`'s job, and
+   it needs their name in the event. Say what you found and leave it alone.
 3. Write `session.threads[]` into `<base>/.claude/<org>.status.json`. Shape and rules:
    **_The Substrate_ → `<org>.status.json`**.
 4. Append `session_start` (carrying `mode` and `threads`) or `session_resume` (carrying `mode`,
@@ -1154,6 +1509,34 @@ Then, in order:
 
 `session_start` carries `mode` and the thread list, neither known until intent resolves, which is why
 it is written here and not in preflight.
+
+#### Report the dependencies that landed
+
+**Every edge the scan wrote gets named back, with its quote and its undo.** The block said what would
+be written; this says what was, and hands over the one command that reverses it. Skipping it is how a
+developer discovers a month later that something linked their issue and they never knew what
+sentence justified it.
+
+```
+Linked on msa1624/api#52:
+  blocked by  msa1624/platform#61   "the /refunds retry path is unsafe until keys land"
+  blocked by  msa1624/api#43        #43 owns the refund endpoint shape
+  blocks      msa1624/web#33        "waiting on refund idempotency before the retry banner"
+                                    now visible on #33's board (@priya)
+
+Unlink any:  gh issue edit 52 -R msa1624/api --remove-blocked-by 61
+The reverse edge lives on the other issue:
+             gh issue edit 33 -R msa1624/web --remove-blocked-by \
+               https://github.com/msa1624/api/issues/52
+```
+
+**The reverse edge's undo is a different command on a different issue**, and printing it is the
+point: `--remove-blocked-by` on #52 will not touch an edge that lives on #33. A developer who reads
+"unlink" and runs the obvious command on their own issue would find it still there.
+
+**None of this goes into the timeline.** These are declared dependencies, written to the issues and
+nowhere else — `blocked_by` events record what a session ran into, and this session has not run into
+anything yet.
 
 If the push fails transiently, say so; the events stay on disk and go up on the next run. If it
 fails for permissions, say so — start-work still did its job, and the events will push once access
@@ -1240,11 +1623,27 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
 - Writing the value first and the rationale second
 - A rationale that restates the value instead of naming where it came from ("High because it's
   important")
-- Leaving a source-less field out of the block instead of rendering it `— ask`
+- Leaving a thinly-sourced field out of the block, or blank in it, instead of filling it with a
+  guess marked `?`
+- Creating an issue with no assignee, or asking who to assign instead of defaulting to `@me`
+- Asking a question per field instead of rendering one block and one `AskUserQuestion`
 - Patching one line after a correction and leaving the lines derived from it stale
 - Writing a cited value without re-reading it live, when the block has been sitting
 - Writing a *researched* blocker into the timeline as a `blocked` event — research finds **declared**
   dependencies; the timeline records **encountered** ones
+- Writing a dependency with no quoted sentence behind it — the class name is not the evidence
+- Citing a shared label, a shared milestone, or a similar title as *why* a dependency belongs, rather
+  than as *how* the candidate was found
+- Writing a `blocks` edge off a string match — it lands on someone else's issue and their board, in
+  front of someone who never saw the block
+- Rendering the artifact-only candidates as a list nobody asked for, or offering to show what the
+  scan discarded — the bar is a bar, not a fold
+- Saying nothing when the scan cleared nothing, instead of one line naming how many were scanned
+- Paginating the scan past page one to turn up one more match
+- Letting Brief 4's output reach Brief 2's `declared[]`, or letting an agent choose its own search
+  terms and then report what they found
+- Writing an edge without printing its undo — and printing `--remove-blocked-by` on the wrong issue
+  for a reverse edge
 - Dispatching a research subagent that can write anything, or rendering a payload before it has
   passed the return gate
 - Appending an abandoned session's `session_end` to *this* month's file when it started last month
@@ -1285,6 +1684,11 @@ from a single-thread read and may be incomplete."* Print `not_covered` when an a
 - Escalating up the ladder for Issue Fields on a personally-owned account
 - Creating a track with no `exit_criteria`
 - Offering "existing track" when `tracks.yml` is empty
+- A `Field provenance` line claiming a write landed — the body is written before the board writes run
+- A field discovery returned that has an entry in the block and none in `Field provenance`
+- A dependency rendered in the body without its verbatim quote, or with a paraphrase of it
+- Rendering the block's compressed lines into the body and calling it provenance
+- Consuming Brief 3's or Brief 4's payload down to its rendered line before the write
 - Committing or modifying a file in a product repo — branches only
 - Rewriting an issue body, or writing to a PR — a branch cut here has no commits, so there is
   nothing to open a PR over; that is end-work's surface
@@ -1310,7 +1714,7 @@ something false into the record, or into a repo that isn't yours to write.**
 
 | Situation | Action |
 |---|---|
-| Start of every run | Resolve base + layout + repo set + org (B0) → bootstrap check → `git pull --rebase` → `get_me()` |
+| Start of every run | Resolve base + layout + repo set + org (B0) → bootstrap check → `git pull --rebase` → `gh api user --jq .login` |
 | Which layout | `git -C <base> rev-parse --show-toplevel` — a path is R, nothing is P |
 | Base is a parent of clones (P) | Repo set = depth-1 children with a `.git`. No current repo, no branch hint |
 | Base is inside a git repo (R) | Repo set = that repo. Ensure the exclusion lines are in `.git/info/exclude` — never `.gitignore` |
@@ -1330,17 +1734,26 @@ something false into the record, or into a repo that isn't yours to write.**
 | No push access on a hand-off | end-work refuses by design. Synthetic close, and report why the wrap-up couldn't run |
 | A session's worktree is gone from disk | Its own report line. Keep sweeping the rest |
 | Deriving the session id | See **_The Substrate_ → Session ids** |
-| Research | Wave 1 before you ask anything; Wave 2 only once new work has a name |
+| Research | Wave 1 before you ask anything; Wave 2 — Briefs 3 **and** 4, in parallel — only once new work has a name |
 | An agent payload | Return gate before you render a line of it |
+| Dependencies on new work | Brief 4: ≤3 searches, `--owner <org>`, page one only, both directions |
+| Enumerating siblings | One GraphQL call on the parent's `subIssues`, run **once** in the main conversation, passed to both Wave 2 briefs |
+| A candidate with a quoted direction | Written on yes, with the quote as its source and in `Field provenance` |
+| A candidate sharing only an artifact name | One count line. Never a list unless asked |
+| A candidate sharing only a label, milestone, or title | Discarded. Never rendered, never counted as a near-miss |
+| A `blocks` edge | Same bar as `blocked by`, and the line names whose board it lands on |
+| Scan cleared nothing | One line: how many scanned, across how many queries. Never silence |
+| After writing dependencies | Report each with its quote and the exact unlink command — the reverse edge's undo is on the *other* issue |
 | On a `<type>/<repo>-<N>-<slug>` branch | Propose the thread with its source; confirm, don't assume |
 | On `main`, clean tree | No proposal from the branch. Resolve intent from what they said, else ask once. |
-| A field with no source | Render `— ask` with a labelled suggestion. Block can't be accepted until answered. |
+| A field with a thin source | Render a best guess marked `?` with that source named. Block stays acceptable. |
+| A new issue, no assignee named | `--assignee "@me"`. Only a named person displaces it. |
 | Developer corrects a line | Re-render the whole block, mark it `← you`, get a fresh yes |
 | Between the block and the write | Re-read every cited value live |
 | Developer picks several threads | `fan_out`, one `session.threads[]` entry each, check out every branch |
 | Picking up someone's work | **_The Substrate_ → Handoff scan**: this month + last, all devs, bound stated in the output; mode `handoff` |
 | New task in a track | Sub-issue under the track's `parent`, every discovered field accounted for, then branch |
-| Which fields to set | `list_issue_fields` at call time — never a remembered list |
+| Which fields to set | `gh api /orgs/{org}/issue-fields` at call time — never a remembered list |
 | Which board to add to | `organization(login:){projectsV2}` at call time — never a remembered number |
 | Org has no project | Nothing to link. Say so once; not a failure. |
 | Org has several projects | `— ask`, listing them. Never pick one. |
@@ -1353,7 +1766,7 @@ something false into the record, or into a repo that isn't yours to write.**
 | Policy has no key for this moment | Leave `Status` alone. Absent means no transition, not "work it out". |
 | Item already at the target option | No-op. Don't write it, don't report it as a change. |
 | A role has no field | Say so. Never substitute a neighbouring field. |
-| A field write fails | Walk gh-wrapper's rungs 2–3, then report unset naming what you tried |
+| A field write fails | Walk gh-wrapper's rung 2, then report unset naming what you tried |
 | Brand new track | Parent issue → `tracks.yml` entry with `exit_criteria` → sub-issue → branch |
 | `tracks.yml` is empty | Don't offer "existing track" |
 | "Just looking" | Brief and stop. No cursor write, no event, no branch. |
@@ -1375,11 +1788,20 @@ something false into the record, or into a repo that isn't yours to write.**
 | "end-work finished, so I'll carry on with the session I read at the start" | That read is stale by definition — end-work's last act was to clear it. Read it again. |
 | "The branch name says thread 41, so that's what we're working on" | It's a hint. Propose it with its source and open only on a yes. They may be about to switch. |
 | "I researched it, so it's established" | Research produces a *sourced proposal*. It becomes established when the developer sees the source and says yes. If you can't write the source line in one line, you didn't research it — you guessed and then explained. |
-| "They always say yes to these blocks, I'll fold in the one field I couldn't source" | That is the exact line they'd have caught. An unsourced field renders `— ask`, never as a proposal. |
+| "They always say yes to these blocks, I'll fold in the one field I couldn't source" | Folding it in *unmarked* is the failure, not filling it. Guess it, render it `?`, name the thin source, and re-list it in the closing line — that is the line they'd have caught, and marking it is what gives them the chance. |
+| "Nothing established the effort, so I'll leave it blank and ask" | An empty field is invisible on the board and reads as untriaged. Guess from siblings, mark it `?`, and let them overturn it in four words. |
 | "Six lines is a lot to read, I'll show the two interesting ones" | Then four fields were written without being shown, which is the silent-skip failure with extra steps. Every field discovery returned appears in the block. |
 | "They said 'sounds good' about the plan, that covers the issue" | It covers the plan. The block is the consent surface, and it hasn't been shown yet. |
 | "The rationale column makes the block long" | The rationale column *is* the block. Without it you're asking someone to approve six values on trust, which is the thing this flow replaced. |
 | "The sibling is blocked by #43, so this one is too — I'll write the blocked event" | You found a *declared* dependency. The timeline records what a session ran into. Put it on the issue; leave the timeline to end-work. |
+| "The sibling is blocked by #43, so this one is too — I'll declare it" | A sibling's blocker is how you *found* #43, not proof this work inherits it. Find the sentence that says which way round these two go, or leave it out. |
+| "Same label, same milestone — obviously the same work" | The label is how you found it. Quote a sentence stating the direction, or drop it. Retrieval is not evidence. |
+| "The scan found 11 related issues, I'll list them so they can decide" | Eleven lines they must adjudicate is the cost the caps exist to prevent, and it moves the work rather than doing it. Write what carries a quote, count the rest in one line. |
+| "It probably blocks #61 — cheap to add, they can remove it" | It lands on #61's blocked-by list and #61's board, in front of someone who was not in this conversation. Removing it is their afternoon, not yours. |
+| "Nothing cleared the bar, so there's nothing to say" | "I scanned 34 open issues and none carried a quoted direction" is the most reassuring line in the block. Silence reads as "didn't look." |
+| "Page one missed it — I'll check page two" | If the tie were strong enough to write, it would have ranked. Page two buys noise by construction. |
+| "I'll remember they dropped #61 so I don't offer it again" | Research is never persisted, and on a create there is no next time. Don't invent a memory the substrate doesn't have. |
+| "The scan is the same work as the field brief, one agent can do both" | They run under opposite defaults — one must fill every row, the other must drop every unquoted one. One agent holding both instructions lets one of them decay. |
 | "I read #38 five minutes ago, no need to re-read before writing" | Five minutes is enough for someone to move the target date. Re-read the values you cited, then write. |
 | "The agent already discovered the fields" | You discover once and hand the result down. Several agents discovering independently can return several schemas, and the block would show one. |
 | "They're just looking, but I'll record the session anyway — it's harmless" | It's a `session_start` with no work behind it, and end-work will later close a session that never happened. Write nothing. |
@@ -1388,7 +1810,7 @@ something false into the record, or into a repo that isn't yours to write.**
 | "I know this org's fields, I'll skip the discovery call" | Recall is not discovery. An admin can change the set without telling you, and you'd never know. |
 | "Discovery returned a field nobody mentioned, I'll leave it out quietly" | A silently skipped field reads as "not applicable" to whoever reads the record next. Set it or say it's unset. |
 | "The board auto-adds new issues, so I don't need to link it" | Auto-add workflows are scoped to some repos and not others, and you cannot read that scope from here. The repo hosting this thread may not be covered — and adding is idempotent, so linking costs nothing. |
-| "Setting the Issue Fields is the same as putting it on the project" | Four separate mechanisms sit on that issue. An issue can carry every field the org defines and be on no board at all. |
+| "Setting the Issue Fields is the same as putting it on the project" | Five separate mechanisms sit on that issue. An issue can carry every field the org defines and be on no board at all. |
 | "It's on no board, but that's a board-config problem, not mine" | An issue nobody can see on the board is work nobody plans around. Link it or say it isn't linked. |
 | "I added it to the board, so the board is up to date" | The add sets no values. The card is sitting in whatever the board's default is, which is not the state the work is actually in. Set `Status` too. |
 | "Obviously a new issue starts in Backlog" | That's a policy, and it either exists in `status-policy.yml` or it doesn't. If it doesn't, ask once and write it down — don't act on a convention the board never stated. |
@@ -1397,7 +1819,7 @@ something false into the record, or into a repo that isn't yours to write.**
 | "The board's built-in workflow moves it when I cut the branch" | Same unreadable-scope problem as auto-add. You cannot see which workflows are enabled from here, and the write is idempotent. |
 | "I'll add it to the board now and set Status at wrap-up" | Later doesn't happen — that is why this is one write sequence and not two. |
 | "There's no sizing field, but this one is close enough" | Closest ≠ correct. It records a different field. Report the role unfilled instead. |
-| "The field write failed, so it can't be set" | One failed rung is not three. Walk them, then name what you tried. |
+| "The field write failed, so it can't be set" | One failed rung is not both. Walk them, then name what you tried. |
 | "Exit criteria can be added once the track takes shape" | Then it never is, and the track sits on the Gantt forever. It's required at creation. |
 | "I'll just commit the branch's first change while I'm here" | start-work creates branches and issues. It does not modify, commit, or push product-repo files. |
 | "The base has no remote, so I can't run — I'll error out" | A working directory with no remote is a normal place to run a session from — it's what layout P looks like. Read the children's remotes, then `tracking-org`, then ask once and record it. |
@@ -1408,6 +1830,13 @@ something false into the record, or into a repo that isn't yours to write.**
 | "The directory is called `acme-web`, so the org is `acme`" | A directory name implies nothing about which GitHub org owns the work. Ask, and write the answer down so it's asked once. |
 | "I'll add the tracking paths to `.gitignore` — that's what it's for" | `.gitignore` is tracked. Writing it modifies the product repo and lands in someone's commit. `.git/info/exclude` does the same job and touches nothing tracked. |
 | "The clone is inside the repo now, so committing it is fine" | The record is out-of-band precisely so that abandoning or squashing the work doesn't take its history with it. Exclude it. |
+| "The block already showed the sources, so the body can be brief" | The block is read by someone who was in the conversation, in ten seconds. The body is read by someone who wasn't, in a month. Brevity that works for the first reader fails the second — that asymmetry is why both exist. |
+| "I'll paste the block into the body — same content, one render" | The block is a compression, and pasting it makes the compression permanent. The runner-up, the full rationale, and the quote's surface are gone, and nothing downstream can recover them. |
+| "The evidence for this field was thin, so leave it out of the body" | Thin evidence is what `inferred` is *for*. A row missing from the body is indistinguishable from a field nobody had to decide, which is a stronger claim than the truth. |
+| "The runner-up is obvious from the value" | It's obvious to you, now, holding the payload. The value is on the issue forever; the second choice and the condition that would have selected it are nowhere else. |
+| "The board add succeeded, so the body can say it was added" | The body is written by `gh issue create`, before the add runs. You are not reporting an outcome, you are predicting one — and a body that asserts what it cannot observe is worse than one that stays quiet. |
+| "The quote is long, I'll summarise it in the body" | The quote is the entire evidence. A summary is your reading of it, which is the inference the bar exists to keep out of the record. |
+| "Nobody reads issue bodies a month later" | That is the only reader this section has. If the claim were true the section shouldn't exist — and if it's false, brevity written on that assumption is what fails them. |
 
 ## The Bottom Line
 

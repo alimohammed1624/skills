@@ -214,12 +214,12 @@ select. Two concepts:
 - **Thread** — one unit of work inside a track. Usually exactly one GitHub issue, plus the PRs and
   commits that close it.
 
-This maps cleanly onto machinery that already exists: GitHub's `sub_issue_write` gives us real
+This maps cleanly onto machinery that already exists: GitHub's sub-issue API (`gh issue edit --add-sub-issue`) gives us real
 parent/child issues, and `gh-wrapper` already **requires** Priority, Effort, Start date and Target
 date on every issue creation. That means every thread already has the dates a Gantt chart needs —
 we've just never collected them anywhere they could be charted.
 → **Superseded by the gh-wrapper rewrite.** It no longer names any field. The set is discovered
-per-org at call time with `list_issue_fields`, and what it requires is that *every discovered field*
+per-org at call time with `gh api /orgs/<org>/issue-fields`, and what it requires is that *every discovered field*
 be either set or explicitly reported unset. The Gantt argument survives unchanged for this org,
 where the discovered set does include planned dates — it is just no longer a property of the skill.
 
@@ -412,7 +412,7 @@ sequenceDiagram
     S->>G: git status --short + unpushed check
     Note over S,G: ⚠️ IRON LAW unchanged —<br/>blockers still top of report
     S->>T: read status.json (window + active track)
-    S->>G: search_issues / search_pull_requests (live state)
+    S->>G: gh search issues / gh search prs (live state)
     S->>G: git log --since={window}
     S->>G: update issue/PR statuses, reconcile push gaps
     S->>T: append events to timeline/YYYY-MM/<dev>.jsonl
@@ -430,7 +430,7 @@ work*, and end-workday now itself creates uncommitted work. Three options:
    commits, which is a real escalation in what it's allowed to do.
 2. **Write the files and tell the dev to commit them.** Safe, honest, and will be ignored roughly
    half the time, which quietly breaks the "consensus" the design exists for.
-3. **Write via `create_or_update_file` / `push_files`** to the remote directly, bypassing the
+3. **Write via the Contents API (`gh api --method PUT .../contents/<path>`)** to the remote directly, bypassing the
    working tree. Sidesteps the dirty-tree problem entirely, but means your local checkout is behind
    after every wrap-up.
 

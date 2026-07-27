@@ -71,6 +71,24 @@ and voids the prior yes; that cited values are re-read live before writing; that
 blocker goes on the issue and **never** into the timeline; that a new track can't be created without
 `exit_criteria`.
 
+**What to probe — `Field provenance`:** the created issue's body carries the reasoning behind every
+auto-filled value, and it is *deliberately not* the confirmation block. Two surfaces, two readers,
+two lengths — so the failure modes point in opposite directions and both need exercising. Create an
+issue where at least one field has genuinely thin evidence and at least one dependency was found by
+search: check that every field discovery returned has an entry (the block's `Discovery returned N`
+and the body's count must agree); that each `inferred` entry names a **runner-up and the condition
+that would select it**, which is the part no other surface preserves; that every written edge carries
+its `evidence_quote` **verbatim** rather than a summary of it, with the surface it was read from; that
+a `blocks` edge names whose issue it lands on; and that the scan's three counts match the payload.
+Then check the two directions of drift: that the body is not the block's compressed lines pasted over
+— if the runner-ups and full rationales are missing, the payload was consumed too early — and that
+the body has not grown past its bound of one entry per field, per edge, per board mechanism. Finally,
+grep the body for checkmarks and for past-tense "added to" / "set to" on the board lines: **the body
+is written by `gh issue create`, before the board add and the `Status` write run**, so any claim that
+those landed is a prediction wearing the clothes of a record. The thin-evidence field is the sharpest
+probe of all — it must render with its weak source named, never be dropped, and a longer section is
+exactly where a dropped row is easiest to miss.
+
 ### end-work
 
 Its iron law: **uncommitted or unpushed work blocks a clean handoff** — checked first, every run,
@@ -107,7 +125,7 @@ excluded, and it must never rank or editorialize about anyone's output.
 offering window options; that it never comments, writes a field, or appends an event; that it
 **clones but never offers to create** the tracking repo, and degrades gracefully when the org has
 none; that planned dates come from the issue and actual dates from the timeline and never the
-reverse; that no agent runs its own `list_issue_fields`; that agent prose never reaches the report;
+reverse; that no agent runs its own field discovery; that agent prose never reaches the report;
 that a partially-covered join prints its `not_covered` rather than reading as complete; that a
 not-run join prints a reason instead of vanishing; that a repo with no timeline events is called
 untracked rather than inactive.
@@ -116,18 +134,18 @@ untracked rather than inactive.
 
 Required sub-skill for all of the above, and the only one written to be portable — it encodes no
 policy from this org or this workflow. Whenever a `gh` CLI command would otherwise run — typed by
-Claude, pasted by the user, or implied by a script — it routes the action down a three-rung ladder:
-the `plugin:github:github` MCP tool if one is loaded, else a `gh` flag, else `gh api graphql`.
-Nothing may be called impossible until all three have been walked and named. What keeps field
+Claude, pasted by the user, or implied by a script — it routes the action down a two-rung ladder:
+a `gh` flag if one exists, else `gh api graphql`.
+Nothing may be called impossible until both have been walked and named. What keeps field
 enforcement intact is not the routing but runtime discovery: the field set is read with
-`list_issue_fields` at call time, never recalled from a list. Plain `git` is explicitly not `gh` and
+`gh api /orgs/<org>/issue-fields` at call time, never recalled from a list. Plain `git` is explicitly not `gh` and
 needs no translation.
 
 It also distinguishes org-owned from personally-owned accounts, because Issue Fields, issue types,
 and Teams are organization-only and simply absent on a personal account — where an empty field set
 is the correct and final answer, not a discovery failure to escalate.
 
-**What to probe:** that a missing MCP tool produces a rung-2 or rung-3 attempt rather than a report
+**What to probe:** that a missing `gh` flag produces a `gh api graphql` attempt rather than a report
 of impossibility, and that dropping down is announced rather than silent; that issue creation is
 questioned rather than filled with a guess when a field is missing; that the valid option list is
 discovered rather than assumed, and an option outside it is rejected; that a field which resists one
@@ -147,7 +165,7 @@ never has to open the project board.
 | end-work | compliance · session brief · dependencies (compare) |
 | `/snapshot` | repo+org rollup · who-did-what · planned/sizing joins · dependencies (compare) |
 
-Each skill states the **shared preamble** once — the read-only rule, the three-rung ladder, the
+Each skill states the **shared preamble** once — the read-only rule, the two-rung ladder, the
 GitHub traps, the return envelope — then a short brief per agent. `gh-wrapper` carries the portable
 version of the contract and the gates that apply to any caller.
 
@@ -157,7 +175,7 @@ returns is a receipt, and every payload passes a return gate before a line of it
 
 **The guarantee is weaker than it looks, and the skills say so.** `Explore` holds no `Write`, `Edit`,
 or `NotebookEdit`, so the timeline, `tracks.yml`, and `views/` are **structurally** safe — a research
-agent cannot touch a file. But `Explore` **does** hold the GitHub MCP tools, so "no research agent
+agent cannot touch a file. But `Explore` **does** hold `Bash`, so every `gh` write is reachable and "no research agent
 writes to GitHub" is instruction plus return gate, not a tool restriction. Custom agent definitions
 with a `tools:` allowlist would enforce it; they cannot live inside a skill, and four self-contained
 files was the higher priority. **Anywhere this repo calls a research agent "structurally incapable"
@@ -168,7 +186,7 @@ the case that used to be impossible and is now merely denied; that a fabricated 
 the event appended without `commits` (rendering "unverified") rather than `git fetch`ed into
 existence; that a hallucinated issue number is dropped and a load-bearing one turns its join not-run;
 that `must_ask` with a non-null value fails the payload; that a field name absent from this run's
-discovery is refused; that `not_covered` always prints; that an "unreachable" claim with no rung-3
+discovery is refused; that `not_covered` always prints; that an "unreachable" claim with no `gh api graphql`
 attempt behind it makes the skill re-walk the ladder itself.
 
 ## State
@@ -230,8 +248,7 @@ environment provides:
   call time rather than recalling one, and that a field the org doesn't define is reported absent
   rather than invented. `Size` and `Estimate` — which target-workflow §5 once required — are the
   standing example: neither exists here.
-- **Relationships has no MCP write tool**, but is writable at rung 2 (`gh issue edit
-  --add-blocked-by`). Dependencies are still recorded as `blocked_by` timeline events — that is a
+- **Relationships is writable at rung 1** (`gh issue edit --add-blocked-by`). Dependencies are still recorded as `blocked_by` timeline events — that is a
   design choice about what the timeline owns, not a capability limit, and the difference is worth
   probing.
 - **Org-only features.** Issue Fields, issue types, and Teams do not exist on a personally-owned
@@ -239,9 +256,10 @@ environment provides:
   exception and are not org-only** — a personal account has `user(login:){projectsV2}`, so an empty
   `organization(...)` result there is the wrong query, not an absence.
 - **Projects v2 board membership is a fourth mechanism** on an issue, alongside Issue Fields,
-  Milestone, and Relationships — and the only one that fails silently, since an issue on no board
-  looks entirely normal. Rung 1 is genuinely **absent** (no MCP tool); rung 2 is
-  `gh project item-add --url` and rung 3 is `addProjectV2ItemById`. Adding is idempotent.
+  Milestone, and Relationships — and the board *item's* fields are a fifth. Those last two are the
+  ones that fail silently, and they fail independently: an issue on no board looks entirely normal,
+  and an item whose `Status` never landed looks planned. Rung 1 is
+  `gh project item-add --url` and rung 2 is `addProjectV2ItemById`. Adding is idempotent.
   gh-wrapper discovers and **reports**; start-work renders the line with a source and does the write
   after the yes, because gh-wrapper has no confirmation surface. `/snapshot` reports unlinked issues
   and never adds one. **What to probe:** that an issue created in a repo *outside* the board's
@@ -258,7 +276,7 @@ environment provides:
   there are no asset files any more.
 - **The repo name in `origin` may be stale.** This repo's remote says `msa1624/claude-workday-test`;
   the live name is `msa1624/skills`, reached by GitHub's rename redirect. The substrate derives only
-  the *owner* from the remote, so paths are safe — but branch names and `issue_write(repo:)` need
+  the *owner* from the remote, so paths are safe — but branch names and any `-R owner/repo` flag need
   the resolved name. Resolve it with `gh api repos/<owner>/<name> --jq .name` rather than parsing
   the URL.
 

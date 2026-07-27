@@ -26,8 +26,8 @@ recovery runs one way only, and a skill that called back would loop.
 format, and view-generation rules this skill depends on.
 
 **REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. It routes GitHub access down
-a three-rung ladder — MCP tool, then `gh` flag, then `gh api graphql` — and nothing is reported
-impossible until all three have been walked.
+a two-rung ladder — a `gh` flag, then `gh api graphql` — and nothing is reported
+impossible until both have been walked.
 
 **Write surfaces, per target-workflow §2:** the tracking clone and cursor files; issue comments,
 labels, state, assignees, and field values on issues the session touched; and **new PRs over
@@ -198,7 +198,7 @@ name.
 git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null
 ```
 
-Present → pull (B3). Missing → `search_repositories(query: "repo:{org}/tracking")`.
+Present → pull (B3). Missing → `gh repo view {org}/tracking` (a 404 means it does not exist).
 
 **B2. Bootstrap.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
 <base>/.claude/.tracking/{org}`, and say where. **Remote does not exist → offer to create it and wait for
@@ -278,8 +278,8 @@ tracks:
 
 **Discover at runtime — never hardcode, and never write a field name you did not discover this run:**
 
-```
-list_issue_fields(owner: "{org}")        → org fields and their valid options
+```bash
+gh api /orgs/{org}/issue-fields   # org fields and their valid options
 ```
 
 At the last check `msa1624` defined exactly these four. **Treat this as the expected result of that
@@ -399,7 +399,7 @@ computed "time worked" is the raw material for exactly the comparison principle 
 
 `dev` is the human who triggered the session, matching commit **authorship** — read from the author
 field and `Co-authored-by:` trailers, bots excluded. An agent-authored commit co-authored to a person
-attributes to that person. Handle from `get_me()`.
+attributes to that person. Handle from `gh api user --jq .login`.
 
 ### Generated views *(end-work only)*
 
@@ -557,7 +557,7 @@ start-work never writes one there, so anything found would be some other base's 
 If no cursor turns up and the developer believes they opened a session, say so plainly and ask which
 directory they started in, rather than closing a session here that was never opened here.
 
-`get_me()` for the developer's handle.
+`gh api user --jq .login` for the developer's handle.
 
 #### The worktree set
 
@@ -645,8 +645,8 @@ cannot see into reporting "clean" is exactly the failure that ships someone's un
 it is one cheap call and it is what makes "never write a field name you did not discover this run"
 checkable against every proposed write.
 
-```
-list_issue_fields(owner: "{org}")   → this run's field set. Pass it into the briefs.
+```bash
+gh api /orgs/{org}/issue-fields   # this run's field set. Pass it into the briefs.
 ```
 
 #### Shared preamble — goes in every brief
@@ -654,8 +654,9 @@ list_issue_fields(owner: "{org}")   → this run's field set. Pass it into the b
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
-create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+NEVER call setIssueFieldValue, addProjectV2ItemById,
+updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
+edit/create/close/comment, gh project item-add/item-edit, or
 gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
 never as an action. You CAN call these tools; not calling them is the rule you are
 being held to.
@@ -668,10 +669,9 @@ destroys the comparison.
 NEVER check whether work is uncommitted or unpushed. That check is the caller's iron
 law and it already ran. You report pushed:true|false per commit; nothing more.
 
-Ladder: MCP tool → gh flag → gh api graphql. Never report something unreachable
-without walking all three and naming all three. MCP missing is not a capability gap:
-say so once (rung_reason "mcp_absent") and work rungs 2-3 for the whole run.
-Cross-repo blocker rollups start at rung 3 by ROUTING, not escalation.
+Ladder: gh flag → gh api graphql. Never report something unreachable
+without walking both and naming both.
+Cross-repo blocker rollups start at rung 2 by ROUTING, not escalation.
 NEVER read issue_dependencies_summary to decide whether something is blocked.
 The fields are blockedBy / blocking on Issue — NOT blockedByIssues.
 HTTP 200 can carry an "errors" key. Nulls under errors are FAILURES, not absences.
@@ -700,7 +700,7 @@ covered/not_covered are MANDATORY.
 > closing_refs[], pushed}`. `gaps[]` — `{kind, commit, thread, evidence, proposed_action, …,
 > confidence}`. `no_gap_found_for[]`, `commits_with_no_issue_ref[]`.
 >
-> **`proposed_action` is a closed enum: `add_issue_comment` · `append_progress_event` ·
+> **`proposed_action` is a closed enum: `post_issue_comment` · `append_progress_event` ·
 > `append_blocked_event` · `update_field` · `ask_user_whether_done`. There is no `close_issue`
 > value, no `open_pr` value, and no board-`Status` value.** A closing keyword on a still-open issue
 > can only ever produce `ask_user_whether_done` — closing keywords state *intent*, not completion.
@@ -746,13 +746,13 @@ compliance pass did not run" is a printed line rather than an omitted section.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `sub_issue_write`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and say a read-only agent attempted a write. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. |
 | **SHA** — every SHA bound for a `commits` array survives `git -C <worktree> cat-file -e <sha>^{commit}` | Append the event **without** `commits`. It renders `(unverified)`, which is the honest outcome. **Never `git fetch` to make a fabricated SHA real.** |
-| **Discovery** — every proposed field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
+| **Discovery** — every proposed field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. `data: null` with an `errors` block at HTTP 200 is a permissions or transient failure, **not** a hallucination. |
 | **Reference form** — matches `^[\w.-]+/[\w.-]+#\d+$` | Reject the record. A bare `#N` in `thread` or `blocked_by` is unresolvable from another repo. |
 | **Encountered vs. declared** — an `append_blocked_event` carries session evidence | Reject it. A discovered dependency goes on the issue only; feeding it to `blocked_by` makes `/snapshot`'s join compare a set with itself. |
-| **Ladder honesty** — unreachability claims backed by rungs 1, 2 **and** 3, or `mcp_absent` | Unproven. **Re-walk the ladder yourself.** |
+| **Ladder honesty** — unreachability claims backed by **both** rungs | Unproven. **Re-walk the ladder yourself.** |
 | **Coverage** — `not_covered[]` printed | Never omit it. |
 
 **Nothing a subagent returns is a receipt.** Every write happens here, in the main conversation,
@@ -760,15 +760,15 @@ after the block in Step 6.5 is accepted.
 
 The window is `session.started_at`. Never widen it silently.
 
-```
-search_issues(query: "org:{org} updated:>={window}", sort="updated", order="desc")
-search_pull_requests(query: "org:{org} updated:>={window}", sort="updated", order="desc")
-search_issues(query: "org:{org} state:closed closed:>={window}")
-search_pull_requests(query: "org:{org} state:merged merged:>={window}")
+```bash
+gh search issues --owner {org} --updated ">={window}" --sort updated --order desc
+gh search prs    --owner {org} --updated ">={window}" --sort updated --order desc
+gh search issues --owner {org} --state closed --closed ">={window}"
+gh search prs    --owner {org} --merged --merged-at ">={window}"
 ```
 
-For items updated but not closed, `issue_read` / `pull_request_read` for comments and review history
-— what actually changed, not just that something did.
+For items updated but not closed, `gh issue view N --comments` / `gh pr view N --json reviews,comments`
+for comments and review history — what actually changed, not just that something did.
 
 ### Step 5: Propose the GitHub Writes
 
@@ -778,12 +778,14 @@ For session threads with meaningful progress. Every proposed field write is chec
 set **this run's discovery** returned — end-work must not write a field name it did not
 discover this run:
 
-```
-add_issue_comment(owner, repo, issue_number, body: "Progress: implemented X, Y. Remaining: Z.")
-issue_write(method: "update", owner, repo, issue_number, labels: [...])
-issue_write(method: "update", owner, repo, issue_number, state: "closed", state_reason: "completed")
-issue_write(method: "update", owner, repo, issue_number,
-            issue_fields: [{field_name: "<discovered-planned-finish-field>", value: "YYYY-MM-DD"}])
+```bash
+gh issue comment N -R {org}/<repo> -b "Progress: implemented X, Y. Remaining: Z."
+gh issue edit    N -R {org}/<repo> --add-label "..." --remove-label "..."
+gh issue close   N -R {org}/<repo>            # --reason "not planned" where that is the truth
+
+# org Issue Fields have no gh flag — rung 2
+gh api graphql -f query='mutation { setIssueFieldValue(input: { issueId: "I_..."
+  issueFields: [{ fieldId: "IFD_...", dateValue: "YYYY-MM-DD" }] }) { issue { id } } }'
 ```
 
 Update labels *before* closing, so the next scan reads the right state. Shift the planned-finish
@@ -804,16 +806,18 @@ If the transition is already there because the board's own workflow beat you to 
 already-at-target no-op — say nothing. Closing an issue and leaving its card in `In Progress` is
 the drift this section exists to stop.
 
-**Every proposed comment carries its provenance**, the way start-work puts it in the issue body.
-end-work must not rewrite bodies, so the source lines go in the comment it is already posting.
+**Every proposed comment carries its provenance**, in the shape start-work's `Field provenance`
+specifies for the issue body — the source named under each value, an inferred value's runner-up
+given, and every quote reproduced verbatim rather than summarised. end-work must not rewrite bodies,
+so that section goes in the comment it is already posting.
 
-**If a write fails, that is a rung, not a verdict.** Drop to `gh issue edit` and then
-`gh api graphql` before reporting anything unset, and name what you tried. If a role has no field in
+**If a write fails, that is a rung, not a verdict.** Drop to `gh api graphql`
+before reporting anything unset, and name what you tried. If a role has no field in
 this org, say so rather than writing the nearest field that accepts the value.
 
 **Dependencies hit during the session.** The timeline's `blocked_by` is the authoritative record
 **by design, not because the write is unavailable** — see *The Substrate* → Issue Fields in this Org.
-The Relationship itself is writable at rung 2:
+The Relationship itself is writable at rung 1:
 
 ```bash
 gh issue edit <N> --add-blocked-by <number-or-full-URL>   # URL form crosses repos
@@ -838,15 +842,26 @@ session fires `unblocked` only.
 step** — a timeline that says the work passed to @ali while the issue still shows the sender is the
 exact drift this skill is supposed to prevent, and it is invisible to anyone reading only GitHub.
 
+```bash
+gh issue edit N -R {org}/<repo> --add-assignee "<to>" --remove-assignee "<from>"
 ```
-issue_write(method: "update", owner, repo, issue_number, assignees: ["<to>"])
-```
+
+`<from>` is normally the current user: start-work assigns `@me` at create and claims unassigned
+issues it picks up, so by the time work is handed off the sender is usually already on it. Read the
+issue's live `assignees` for `<from>` rather than assuming — a thread that changed hands once
+already will not have you on it.
+
+**A handoff is the one reassignment that is never a default.** Self-assigning is automatic precisely
+because it claims *unowned* work; moving an issue off someone else is a named, explicit act that
+needs a recipient in `to` and the developer's yes. Nothing in the self-assign default authorizes
+taking an issue someone else holds — if `<from>` isn't you and no handoff was declared, leave it
+alone.
 
 The board gets the policy's `handoff` transition alongside the reassignment, for the same reason:
 a card whose assignee changed but whose column didn't is half a handoff. Boards that don't
 distinguish a handoff column leave the key out and the card stays where it is.
 
-If the recipient cannot be assigned — not a collaborator, or the write fails after rungs 2–3 — say
+If the recipient cannot be assigned — not a collaborator, or the write fails at both rungs — say
 so plainly and leave the event alone. The timeline records what happened; a failed reassignment
 does not change that it happened. **The `Status` transition is judged separately** — one write
 failing is not evidence about the other, and reporting them as one outcome hides which surface
@@ -876,7 +891,7 @@ the block, so the trade is visible before they accept it rather than discovered 
 |---|---|---|
 | The branch has commits the base does not | `git -C <worktree> log --oneline origin/<base>..HEAD` | Nothing to propose. Skip silently. |
 | Everything on the branch is **pushed** | already computed by the iron law, Step 3 | **Do not open it.** A PR over a branch with unpushed commits does not contain the work. Report it as not opened, naming the unpushed commits. |
-| No PR is already open for this head | `list_pull_requests(owner, repo, head: "<branch>", state: "open")` | Nothing to do. Say it's already open, with its ref. |
+| No PR is already open for this head | `gh pr list -R {org}/<repo> --head "<branch>" --state open` | Nothing to do. Say it's already open, with its ref. |
 | The thread has an issue to link | `session.threads[].thread` | Open it anyway; report it unlinked. |
 
 **Draft or ready is derived, not asked.** You already computed the answer for the Carry-over section:
@@ -1215,7 +1230,7 @@ Omit the Pending Changes section entirely when Step 3 comes back clean.
 - Proposing a `note` or a `blocked_by` an agent produced with no commit or session evidence behind it
 - Delegating the iron law to a subagent
 - Passing an agent's prose into the report instead of re-rendering its rows
-- Reporting a field unsettable after one failed attempt, without walking rungs 2–3
+- Reporting a field unsettable after one failed attempt, without walking both rungs
 - Rewriting an issue body, or merging, reviewing, approving, or rewriting a PR — creation is the
   whole surface
 - Opening a PR over a branch with unpushed commits, so the PR does not contain the work
@@ -1277,8 +1292,8 @@ something false into the record, or into a surface that isn't yours to write.**
 | Window | `session.started_at`. No session → midnight today, and say so. |
 | Invoked by start-work's recovery | Nothing changes. Read the cursor, take the long window, render the block as always |
 | Reached the end of a recovery run | Step 9 clears `session` as usual — start-work re-reads it and carries on |
-| Item made progress but isn't done | `add_issue_comment` + labels + a `progress` event |
-| Item is genuinely done | `issue_write` closed/completed **and** a `done` event **and** the policy's `done` transition — closing moves no card |
+| Item made progress but isn't done | `post_issue_comment` + labels + a `progress` event |
+| Item is genuinely done | `gh issue close --reason completed` **and** a `done` event **and** the policy's `done` transition — closing moves no card |
 | Which `Status` to set | `status-policy.yml` in the tracking repo. This skill fires `blocked`, `unblocked`, `pr_opened`, `handoff`, `done` — never start-work's moments. |
 | Two board moments in one session | Fire the **last** one reached. The timeline carries the intermediate events. |
 | No `status-policy.yml` | Render `— ask` with the board's real options, then write the file into the same commit as the events |
@@ -1295,12 +1310,12 @@ something false into the record, or into a surface that isn't yours to write.**
 | PR base isn't the default branch | Keep the plain ref, report unlinked, record `linked: false` |
 | Just opened a PR | Board it, move the issue's `Status`, comment on the issue, append `pr_opened` — none of that follows from the create |
 | Which item a `pr_opened` move applies to | **The issue's** item. The PR's item mirrors it; the board plans around the issue. |
-| Which fields to update | **This run's `list_issue_fields` result** — never a remembered name |
+| Which fields to update | **This run's `/orgs/{org}/issue-fields` result** — never a remembered name |
 | Research | Four agents in parallel, after the iron law, before the block |
 | An agent payload | Return gate before rendering or writing |
 | A closure | Its own named yes. A bare "yes" never closes anything. |
 | After the block is accepted | Write, then show the diff and push in one step |
-| A field write fails | Walk gh-wrapper's rungs 2–3, then report unset naming what you tried |
+| A field write fails | Walk gh-wrapper's rung 2, then report unset naming what you tried |
 | Commit references `#N` with no event | Append the missing `progress` event, report it as a compliance gap |
 | Push rejected | Discard `views/`, `pull --rebase`, regenerate, push |
 | Push fails transiently | Events stay on disk, reported, pushed next run |
@@ -1314,8 +1329,8 @@ something false into the record, or into a surface that isn't yours to write.**
 |---|---|
 | "The uncommitted changes are trivial, I'll note them at the bottom" | Trivial changes are exactly what gets lost. Top of report, marked blocking. |
 | "I know the date field is called Target date" | You know what it was called last time. Discover it, then write it. |
-| "`issue_write` failed, so the field can't be set" | That's rung 1 of three. `gh issue edit`, then `gh api graphql`. Then report, naming all three. |
-| "Relationships has no write tool, so the timeline is all we can do" | It has no *MCP* write tool. Rung 2 writes it. The timeline is authoritative by design, not by inability. |
+| "`gh issue edit` failed, so the field can't be set" | That's one rung of two. Try `gh api graphql`. Then report, naming both. |
+| "Relationships has no write tool, so the timeline is all we can do" | `gh issue edit --add-blocked-by` writes it at rung 1. The timeline is authoritative by design, not by inability. |
 | "The commits are local, that still counts as done" | Unpushed work is invisible to everyone else. It isn't handed off until it's pushed. |
 | "I'm standing in ~/work/api, so that's the repo to check" | The session touched three. Iterate the worktree set. |
 | "I'm in ~/work and it isn't a repo, so there's nothing to sweep" | It's a workspace of N repos, and every one of them is in scope — that's what opening Claude above them means. Sweep the repo set. |

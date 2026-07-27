@@ -287,7 +287,7 @@ skill derives from `git config --get remote.origin.url`. Bootstrap-if-missing an
 Every thread has an issue, and **every issue carries the org's standard fields**, set at creation.
 
 The workflow depends on *roles*, not on field names. Which field fills a role is discovered at call
-time via `list_issue_fields` and is never hardcoded — the right-hand column is this org's mapping at
+time via `gh api /orgs/<org>/issue-fields` and is never hardcoded — the right-hand column is this org's mapping at
 the last check, not a contract:
 
 | Role | Used by | Field in this org |
@@ -330,6 +330,24 @@ reading the issues is written to the issue's Relationship and **nowhere else**; 
 session actually ran into becomes a `blocked` timeline event. `blocked_by` is the sole input to
 `views/dependencies.md` (§7) and to §8.3's declared-vs-encountered join, so feeding it discovered
 dependencies makes that join compare a set with itself — degraded with no visible symptom.
+
+**Finding a candidate is not declaring one.** start-work searches the org's open issues at creation
+time, in both directions — what this work might depend on, and what might depend on it — and the
+search is deliberately broad, because a blocker two repos over is exactly the one nobody finds by
+hand. But what a broad search returns is *retrieval*, and **retrieval is not evidence.** A shared
+label, a shared milestone, a similar title, or two issues touching the same file are all fine ways
+to *find* a candidate and no reason at all to *declare* an edge.
+
+A candidate reaches Relationships only when it carries a quotable **direction** — a sentence saying
+which way round the two pieces of work go, quoted verbatim from the candidate's own body or from the
+conversation ("blocked on X", "waiting on X", "after X lands"). What clears that bar is written
+without asking, reported with its quote and a one-line undo, on the same principle §6 applies to
+mirroring a `blocked_by` onto its issue: a question with one sensible answer is load, not consent.
+What does not clear it is never written, and never rendered as a menu — a scan that hands the
+developer twelve maybes to adjudicate has moved the work rather than done it.
+
+The declared side therefore stays a set of facts someone accepted, not a set of search results, and
+§8.3's join keeps its meaning. Nothing found this way ever reaches `blocked_by`.
 
 Parent/child structure comes from GitHub sub-issues, not a shadow hierarchy. **A milestone is not a
 track** — a milestone is a shipping checkpoint owned by GitHub, a track is a registry entry owned by
@@ -584,7 +602,9 @@ flowchart TD
   read from, with inferred lines marked and re-listed. A field with no source renders as a question
   carrying a labelled suggestion. Silence is not consent; a correction voids the previous yes and the
   whole block re-renders. The issue body carries a `Field provenance` section so the sources survive
-  the confirmation and stay auditable.
+  the confirmation and stay auditable. **It is not a copy of the block** — the block compresses each
+  field to one line for a reader deciding now; the body carries what an inferred value was inferred
+  from and what the runner-up was, for a reader auditing it a month later.
 - **New work creates the branch**, named from the issue it just created (§3).
 - **"Just looking" opens nothing and writes nothing.** A skill that demands a track before it will
   say anything is a skill people stop running.
@@ -729,7 +749,9 @@ timeline history — computed at report time and cached nowhere:
 - **Declared vs. encountered dependencies.** The issues' Relationships field says what was expected
   to block what; the timeline's `blocked_by` events say what actually did. Each direction of
   disagreement is worth surfacing — a dependency hit in practice but never declared, and a declared
-  Relationship no session ever ran into.
+  Relationship no session ever ran into. **Neither side ever contains a search candidate**: both are
+  sets someone committed to, and admitting a third kind would make the join report a disagreement
+  that never existed.
 
 Milestone is available on every issue and is the natural grouping for a release-shaped report, which
 cuts across tracks rather than following them (§5).
@@ -745,8 +767,7 @@ cuts across tracks rather than following them (§5).
 | Clone exists but is stale | `git pull --rebase` at the start of every start-work, end-work, and `/snapshot` run. Not conditional on a stored sync timestamp — there isn't one. |
 | Developer has no write access | **end-work refuses to run**, checking push access before writing anything rather than banking events nobody will see. start-work and `/snapshot` work in full, since both only read. A `--local-only` escape hatch exists for someone knowingly accepting an unshared record; it is never the default and never silent. |
 | Empty `tracks.yml` | "Task in an existing track" is not offered in the question tree; the flow degrades to "brand new track" with no special case. |
-| MCP tools not loaded this session | Say so once and work the remaining rungs for the rest of the session. Not a reason to report anything unavailable, and not re-checked per command. |
-| A field or relationship looks unsettable | Walk all three rungs before saying it cannot be set, then name what was tried. Running out of time makes a field *unset*, never *unsettable*. |
+| A field or relationship looks unsettable | Walk both rungs before saying it cannot be set, then name what was tried. Running out of time makes a field *unset*, never *unsettable*. |
 | Owner is a personal account | Issue Fields and issue types do not exist there. The analyses that depend on them degrade per §5 and say so; nothing is approximated to fill the gap. |
 
 Access to GitHub itself is `gh-wrapper`'s job — `.claude/skills/gh-wrapper/SKILL.md` owns the ladder

@@ -1,67 +1,30 @@
-# GitHub access surfaces: MCP vs GraphQL vs `gh`
+# GitHub access surfaces: `gh` vs GraphQL
 
-Comparison of the three ways this repo's workflows can reach GitHub: the
-`plugin:github:github` MCP server, the GitHub GraphQL API (v4), and the `gh` CLI.
-Focused on the differences — what each surface uniquely enables and where each
-one dead-ends.
+Comparison of the two ways this repo's workflows reach GitHub: the `gh` CLI and
+the GitHub GraphQL API (v4), which `gh api graphql` fronts. Focused on the
+differences — what each surface uniquely enables and where each one dead-ends.
 
-Verified 2026-07-26 against `gh` 2.96.0, live GraphQL schema introspection, and
-the MCP server's actual tool list. The 2026-07-26 pass went beyond reading docs
-and help text: it executed real mutations against the `msa1624` test org
-(issues created and linked across repos, project fields written and reverted, a
-project created and deleted) and **corrected several claims this document
-previously asserted**. See [What verification changed](#what-verification-changed-and-what-it-cost)
-at the end for the corrections and the traps that produced them.
+Verified 2026-07-26 against `gh` 2.96.0 and live GraphQL schema introspection.
+The 2026-07-26 pass went beyond reading docs and help text: it executed real
+mutations against the `msa1624` test org (issues created and linked across
+repos, project fields written and reverted, a project created and deleted) and
+**corrected several claims this document previously asserted**. See
+[What verification changed](#what-verification-changed-and-what-it-cost) at the
+end for the corrections and the traps that produced them.
 
 ## The structural difference
 
 `gh api` and `gh api graphql` are universal passthroughs — anything the REST or
-GraphQL APIs can do, `gh` can reach. The MCP server has **no generic REST or
-GraphQL tool**. If a task isn't one of its tools, it is simply impossible
-there. Most of what follows is a consequence of that.
-
-(The "47 tools" figure this doc previously cited could not be re-confirmed on
-2026-07-26 — the MCP tools did not load at all that session, so treat any tool
-*count* here as inherited rather than measured.)
+GraphQL APIs can do, `gh` can reach. The split between the two surfaces below is
+therefore about *ergonomics and locality*, not about capability ceilings: one
+surface runs on your machine, the other reaches parts of the schema REST never
+exposed.
 
 Ranked by unique reach:
 
 - **GraphQL** is the capability ceiling for anything project-, discussion-, or
   enterprise-shaped.
 - **`gh`** is the only surface with a local filesystem and a git checkout.
-- **MCP** is a curated subset of REST with no escape hatch.
-
-## Known session hazard: MCP tools may not load
-
-The plugin is installed and enabled in `~/.claude/settings.json` and connects
-successfully in most sessions, but **the tools do not always appear in the
-session's deferred-tool list**. When that happens, `ToolSearch` for them returns
-nothing and `gh` is the only available surface. Workflows that hard-require MCP
-will fail closed rather than degrade — see "Org Issue Fields are writable
-without MCP" under [Notes on this repo's setup](#notes-on-this-repos-setup) for
-the worked fallback.
-
-The tool prefix is `mcp__plugin_github_github__`, not `mcp__github__`.
-
-Server config lives at
-`~/.claude/plugins/cache/claude-plugins-official/github/unknown/.mcp.json`:
-remote HTTP at `https://api.githubcopilot.com/mcp/`, bearer auth. There are no
-toolset flags — the enabled set is server-side and not configurable locally.
-
-## MCP-only
-
-Nothing, strictly. Two things it does *conveniently* that are otherwise
-multi-step:
-
-- `push_files` — multi-file single commit without hand-rolling the git-object
-  dance. (GraphQL's `createCommitOnBranch` is equivalent; REST needs 4+ calls.)
-- The Copilot cluster — `assign_copilot_to_issue`,
-  `create_pull_request_with_copilot`, `get_copilot_job_status`,
-  `request_copilot_review`. Reachable elsewhere, but not as one call.
-
-Its value is shape, not reach: consolidated tools (`issue_read` / `issue_write`,
-`pull_request_read`) that collapse REST's endpoint sprawl into a few well-typed
-calls.
 
 ## `gh`-only
 
@@ -80,7 +43,7 @@ Everything that touches the local machine or a TTY:
 
 ## GraphQL-only
 
-Not reachable via REST, and therefore not via the MCP server either:
+Not reachable via REST — GraphQL only:
 
 - **Repository Discussions** — full CRUD. (REST's "discussions" are *team*
   discussions, a different object.)
@@ -106,8 +69,41 @@ Three corrections to common assumptions:
   What is *not* reachable over REST: field **deletion** (404 — `gh project
   field-delete` was needed to clean up a field created via the REST POST),
   project **creation** (`POST orgs/{org}/projectsV2` → 404), `views`, and
-  `status_updates` (both 404). Iterations weren't present on this project to
-  test.
+  `status_updates` (both 404).
+
+### Iteration fields — verified 2026-07-27
+
+An earlier version of this doc said iterations weren't present to test. They are:
+`msa1624` project **#3** carries an `ITERATION` field **named `Sprint`** — the
+name is board-chosen, so `dataType` is the only reliable matcher.
+
+- `ProjectV2IterationField.configuration` is non-null and carries exactly
+  `duration`, `startDay`, `iterations`, `completedIterations`. Each iteration
+  carries `id`, `title`, `startDate`, `duration`, `titleHTML`.
+- Live values: `duration: 14`, `startDay: 1`, three future/current iterations,
+  `completedIterations: []`.
+- Write path confirmed on both rungs — `ProjectV2FieldValue` accepts
+  `iterationId`, and `gh` 2.96.0 has `gh project item-edit --iteration-id`.
+- Read back through `ProjectV2ItemFieldIterationValue` (`iterationId`, `title`,
+  `startDate`, `duration`).
+
+**Still untested:** writing a value onto an item, and any board with a populated
+`completedIterations`.
+
+`ProjectV2FieldCommon` has **four** implementors — `ProjectV2Field`,
+`ProjectV2SingleSelectField`, `ProjectV2MultiSelectField`,
+`ProjectV2IterationField`. A discovery query that selects only the common fragment
+returns `id name dataType` for all four and no values for any of them, which reads
+as "unfillable" rather than "under-queried". `ProjectV2FieldConfigurationConnection`
+exposes `totalCount`; without it a `fields(first:N)` page truncates silently.
+
+**The values accessor differs per type and is not guessable by analogy:**
+`ProjectV2SingleSelectField.options`, but
+`ProjectV2MultiSelectField.multiSelectOptions` (options → `id`, `name`, `color`,
+`description`) and `ProjectV2IterationField.configuration`. Selecting `options` on
+a multi-select fails with `undefinedField` — caught here by running the query, not
+by reading it. Multi-select writes take `{multiSelectOptionIds:[…]}`, a list, and
+have **no rung-1 flag** in `gh` 2.96.0.
 
 ## Cross-repo work: dependencies, hierarchy, and one project over many repos
 
@@ -128,7 +124,7 @@ boundaries. Confirmed working end to end:
   the child's real repo in `sub_issues`.
 
 So cross-repo hierarchy and dependencies are fully writable from the CLI with
-no MCP tool and no GraphQL involved. Reads come back with the foreign repo
+no GraphQL involved at all. Reads come back with the foreign repo
 named: `/repos/{o}/{r}/issues/{n}/dependencies/blocked_by` returns each
 blocker's own `repository.full_name`.
 
@@ -239,25 +235,6 @@ write, not on the read that preceded it.
 - The direction is not uniformly toward GraphQL: **Packages and audit logs have
   both been deprecated *out* of GraphQL toward REST.**
 
-### MCP's blind spots
-
-Whole toolsets are off, not just individual tools:
-
-- **Actions / CI: nothing.** No workflow list, run, dispatch, logs, or artifacts.
-- **Projects v2: nothing.** Confirmed — `create_project` / `list_projects`
-  lookups fail.
-- Notifications, discussions, gists, dependabot, code scanning, security
-  advisories: nothing. The entire security surface is one tool,
-  `run_secret_scanning`.
-- Releases are read-only (three tools; no create, edit, or asset upload).
-- Labels are `get_label` only — no create, update, delete, or list.
-- No rulesets, webhooks, milestones, repo admin, or org admin.
-
-Roughly on: `context`, `repos`, `issues`, `pull_requests`, `users`, partial
-`labels`, `copilot`, a sliver of `secret_protection`.
-Off: `actions`, `projects`, `notifications`, `discussions`, `gists`,
-`dependabot`, `code_security`, `security_advisories`, `stargazers`.
-
 ### `gh`'s blind spots
 
 Narrower, and all escapable via `gh api`:
@@ -277,12 +254,12 @@ Narrower, and all escapable via `gh api`:
 
 ## Cost and failure models
 
-| | MCP | GraphQL | `gh` |
-|---|---|---|---|
-| Rate limit | REST-backed, 5,000 req/hr | 5,000 **points**/hr; **1,000/hr for `GITHUB_TOKEN` in Actions** | whichever API it calls |
-| Batching | one call per tool | one query, many objects — docs' example: 11 REST calls → 1 | REST-shaped |
-| Caching | ETag `304`s are free | **no useful ETags** — polling costs full points every time | inherits |
-| Hard ceilings | REST paging | `first:` must be 1–100; 500k nodes/query; **10s server timeout → 502/504, and the points are still charged** | — |
+| | GraphQL | `gh` |
+|---|---|---|
+| Rate limit | 5,000 **points**/hr; **1,000/hr for `GITHUB_TOKEN` in Actions** | whichever API it calls — REST-backed, 5,000 req/hr |
+| Batching | one query, many objects — docs' example: 11 REST calls → 1 | REST-shaped, one call per request |
+| Caching | **no useful ETags** — polling costs full points every time | ETag `304`s are free on the REST paths |
+| Hard ceilings | `first:` must be 1–100; 500k nodes/query; **10s server timeout → 502/504, and the points are still charged** | REST paging |
 
 GraphQL point cost is `ceil(underlying connection requests / 100)`, minimum 1.
 A well-shaped query is dramatically cheaper than the REST fan-out; a badly
@@ -326,12 +303,11 @@ this note claimed `-rw-r--r--`). Still worth rotating and sourcing from the
 keychain — `gh` already stores its own credentials there — since the token
 sits in plaintext regardless of file mode.
 
-**Org Issue Fields are writable without MCP.** `gh` 2.96.0 genuinely has no flag
-for the four org-level Issue Fields (Priority, Effort, Start date, Target date),
-so it's tempting to treat `issue_write(issue_fields:)` as the only path. Don't:
-in a session where the MCP tools don't load, that assumption makes issue
-creation *impossible* rather than *degraded*. The fallback is `gh api graphql`,
-and it's confirmed working, not just theoretical — exercised directly against
+**Org Issue Fields are writable, just not from the CLI.** `gh` 2.96.0 genuinely
+has no flag for the four org-level Issue Fields (Priority, Effort, Start date,
+Target date), so it's tempting to conclude they can't be set. Don't — that
+conclusion turns a *degraded* write path into an *impossible* one. `setIssueFieldValue`
+over `gh api graphql` is confirmed working, not just theoretical — exercised directly against
 this org's `msa1624` Priority field —
 
 ```
@@ -384,7 +360,6 @@ because the *shape* of each error predicts where the next one will be.
 | "Projects v2, **entirely**" is GraphQL-only, "there is no REST replacement" | False. `orgs/{org}/projectsV2/{n}`, `.../fields` (incl. create), and `.../items/{id}` (incl. field-value write) are real and work. Only views, status updates, field *deletion*, and project *creation* actually 404. |
 | `~/.claude/settings.json` is world-readable at `-rw-r--r--` | It is `-rw-------`. The plaintext-token concern stands; the file-mode alarm did not. |
 | "~230 mutations against thousands of fields" | 255 mutations, 5,572 fields. Directionally right, but it was an estimate presented as a count. |
-| MCP has 47 tools (implied live) | Unverifiable this session — the tools never loaded at all. The number is inherited, not re-checked. |
 | Relationships are `gh issue edit`-only, same-repo-shaped | `gh issue create --blocked-by/--blocking` also exists, and every relationship flag takes a URL, so all of it is cross-repo. |
 
 ### The three traps

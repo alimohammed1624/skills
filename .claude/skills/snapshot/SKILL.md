@@ -17,8 +17,8 @@ report time and cached nowhere.
 event format this skill depends on.
 
 **REQUIRED SUB-SKILL:** Use gh-wrapper before running any `gh` command. It routes GitHub access down
-a three-rung ladder — MCP tool, then `gh` flag, then `gh api graphql` — and nothing is reported
-impossible until all three have been walked.
+a two-rung ladder — a `gh` flag, then `gh api graphql` — and nothing is reported
+impossible until both have been walked.
 
 ## The Iron Law
 
@@ -151,7 +151,7 @@ layout P `<base>/.claude/` sits in no repo, so there is nothing to exclude and n
 the children. No path below is computable until the base and org answer.
 
 **B1.** `git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null`. Present → pull. Missing →
-`search_repositories(query: "repo:{org}/tracking")`.
+`gh repo view {org}/tracking` (a 404 means it does not exist).
 
 **B2.** Remote exists but no clone → `git clone https://github.com/{org}/tracking.git
 <base>/.claude/.tracking/{org}`, and say where.
@@ -190,8 +190,8 @@ track's threads may span several milestones.
 
 **Discover at runtime — never hardcode, never recall:**
 
-```
-list_issue_fields(owner: "{org}")        → org fields and their valid options
+```bash
+gh api /orgs/{org}/issue-fields   # org fields and their valid options
 ```
 
 At the last check `msa1624` defined exactly these four. **Treat this as the expected result of that
@@ -306,8 +306,8 @@ org. That cheapness is the whole point of the tracking repo.
 
 **Discover the fields once, here, before dispatching anything:**
 
-```
-list_issue_fields(owner: "{org}")   → the fields, their types, and single-select options
+```bash
+gh api /orgs/{org}/issue-fields   # the fields, their types, and single-select options
 ```
 
 **This runs exactly once per run and the result is passed to every agent.** No agent discovers
@@ -331,8 +331,9 @@ themselves.
 ```
 You are a READ-ONLY research agent. Return findings; never act on them.
 
-NEVER call issue_write, add_issue_comment, sub_issue_write, setIssueFieldValue,
-create_pull_request, any GraphQL mutation, or gh issue edit/create/close/comment or
+NEVER call setIssueFieldValue, addProjectV2ItemById,
+updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
+edit/create/close/comment, gh project item-add/item-edit, or
 gh pr create/edit/merge/review. You CAN call these tools; not calling them is the
 rule you are being held to. This report writes NOTHING to GitHub — if something seems
 to need a write, return it in asks[]. end-work opens PRs; /snapshot never does, and
@@ -340,13 +341,12 @@ neither do you.
 DO NOT read the timeline, tracks.yml, or status.json. Everything you must compare
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 turns it into a set compared with itself, which looks fine and means nothing.
-DO NOT run list_issue_fields. The field set is supplied. Several agents discovering
+DO NOT run your own field discovery. The field set is supplied. Several agents discovering
 independently can return several mappings, which the report would render as one.
 
-Ladder: MCP tool → gh flag → gh api graphql. Never report something unreachable
-without walking all three and naming all three. MCP missing is not a capability gap:
-say so once (rung_reason "mcp_absent") and work rungs 2-3 for the whole run.
-Cross-repo rollups start at rung 3 by ROUTING — one GraphQL query costs 1 point where
+Ladder: gh flag → gh api graphql. Never report something unreachable
+without walking both and naming both.
+Cross-repo rollups start at rung 2 by ROUTING — one GraphQL query costs 1 point where
 the REST equivalent is 18 requests. Say rung_reason "routing".
 NEVER read issue_dependencies_summary to decide whether something is blocked.
 The fields are blockedBy / blocking on Issue — NOT blockedByIssues.
@@ -444,18 +444,25 @@ activity — it goes in not_covered.
 > **Both directions of disagreement matter**: a dependency hit in practice but never declared, and a
 > declared relationship no session ever ran into. Never infer a dependency from a shared label, a
 > shared milestone, a similar title, or two issues touching the same file.
+>
+> **The prohibition is absolute here, and stays absolute even though start-work now searches.** Both
+> sides of this join are sets someone committed to — declared on the issue, or encountered by a
+> session. A search candidate is neither. Admitting one would make the diff report a disagreement
+> that never existed, which reads exactly like a real finding. **`/snapshot` runs no candidate
+> scan**: that surface belongs to start-work, at creation, where a developer is present to see what
+> was found and drop it in four words.
 
 #### The return gate — run before rendering a line
 
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `issue_write`, `add_issue_comment`, `setIssueFieldValue`, `create_pull_request`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh pr (create\|edit\|merge\|review)` | **Discard the whole payload** and say a read-only agent attempted a write — in a skill whose Iron Law is READ, NEVER AUTHOR, that is the loudest possible finding. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write — in a skill whose Iron Law is READ, NEVER AUTHOR, that is the loudest possible finding. |
 | **No ranking** — `people` keys alphabetical; no `rank`/`score`/`total`/`percentile`/`top_*`/`velocity` key; nothing sorted by a count; `themes` free of evaluative words | **Drop the layer.** Say the contribution layer could not be rendered safely. |
 | **Comparison label** names the roles you actually passed in | Reject the join; print it as not-run. |
-| **Discovery** — every field name is in this run's `list_issue_fields` | Drop it; report that field unset, naming it. |
+| **Discovery** — every field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref. If it was load-bearing — one side of a dependency edge, a track's parent — **the containing join reports itself not-run** rather than rendering with a hole. `data: null` with an `errors` block at HTTP 200 is a permissions failure, **not** a hallucination. |
-| **Ladder honesty** — unreachability claims backed by rungs 1, 2 **and** 3, or `mcp_absent` | Unproven. **Re-walk the ladder yourself.** |
+| **Ladder honesty** — unreachability claims backed by **both** rungs | Unproven. **Re-walk the ladder yourself.** |
 | **Coverage** — `not_covered[]` printed | Never omit it. |
 
 **Agents return rows; you render them.** That is what keeps principle 4 enforceable — you cannot
@@ -485,17 +492,17 @@ missing clone reads as missing rather than as a repo with nothing happening.
 
 Scoped to each repo in the set, for the window:
 
-```
-list_issues(owner, repo, state: "all")            → filter updated_at against the window
-list_pull_requests(owner, repo, state: "all")     → filter updated_at against the window
-search_issues(query: "repo:{owner}/{repo} state:closed closed:>={window}")
-search_pull_requests(query: "repo:{owner}/{repo} state:merged merged:>={window}")
+```bash
+gh issue list -R {owner}/{repo} --state all --json number,updatedAt,...   # filter updatedAt against the window
+gh pr    list -R {owner}/{repo} --state all --json number,updatedAt,...   # same
+gh search issues --repo {owner}/{repo} --state closed --closed ">={window}"
+gh search prs    --repo {owner}/{repo} --merged --merged-at ">={window}"
 ```
 
 Field values come from the **single discovery in Step 1**, passed down — never a second
-`list_issue_fields` call and never a remembered list of names.
+discovery call and never a remembered list of names.
 
-Then for each in-window item, `issue_read` / `pull_request_read` for title, labels, **the discovered
+Then for each in-window item, `gh issue view N --json` / `gh pr view N --json` for title, labels, **the discovered
 field values**, linked issues, and **the people on it** — PR author, issue assignees, PR reviewers.
 
 Three mechanisms sit on the same issue and are read differently: **Issue Fields** (discovered
@@ -510,9 +517,9 @@ never a guess.
 
 *(Delegated to Brief 1, in the same call as Step 2.)*
 
-```
-search_issues(query: "org:{org} updated:>={window}", sort="updated", order="desc")
-search_pull_requests(query: "org:{org} updated:>={window}", sort="updated", order="desc")
+```bash
+gh search issues --owner {org} --updated ">={window}" --sort updated --order desc
+gh search prs    --owner {org} --updated ">={window}" --sort updated --order desc
 ```
 
 Group by repo: shipped, in progress, contributors, activity level. Then group by **track**, joining
@@ -529,9 +536,9 @@ Brief 1 — one extra cheap search buys a fully parallel wave.)*
 
 Build from the PRs gathered in Steps 2–3:
 
-```
-pull_request_read(owner, repo, pullNumber, method: "get_commits")
-list_commits(owner, repo, since: "{start}", until: "{end}")   → commits that landed outside a PR
+```bash
+gh pr view N -R {owner}/{repo} --json commits
+gh api "/repos/{owner}/{repo}/commits?since={start}&until={end}"   # commits that landed outside a PR
 ```
 
 Both paginate — request 5–10 at a time and stop once the window is covered. Cross-reference against
@@ -613,7 +620,7 @@ This is how estimates get calibrated. It is **never** compared across people.
 - A declared relationship no session ever ran into
 
 This is the only view that can show them disagreeing — `views/dependencies.md` is built from the
-encountered side alone, **by design**. The declared side is readable and writable (rung 2); it is
+encountered side alone, **by design**. The declared side is readable and writable (rung 1); it is
 excluded from the committed view because the timeline owns what a session actually hit, not because
 the Relationship could not be reached.
 
@@ -647,7 +654,7 @@ Someone should understand each bullet on one read, without opening GitHub.
 ## Output Format
 
 The field columns below are **this org's discovered fields at the time of writing**, not a fixed
-schema. Build the columns from what `list_issue_fields` returned this run.
+schema. Build the columns from what the org's `issue-fields` discovery returned this run.
 
 ```
 ## Snapshot — {window description} (as of 2026-07-25)
@@ -738,8 +745,8 @@ planned-vs-recorded comparison.)*
 - Building planned dates from the timeline, or actual dates from the issue — they come from opposite
   sources, and swapping them makes the whole join meaningless
 - Reporting a `Size` or `Estimate` value in an org that defines neither
-- Reading field names from memory instead of `list_issue_fields`
-- Letting a research agent run its own `list_issue_fields` instead of receiving the one discovery
+- Reading field names from memory instead of this run's field discovery
+- Letting a research agent run its own field discovery instead of receiving the one discovery
 - Letting an agent write the "which comparison I ran" line — it is the worst-placed thing in the
   system to describe how partial its own join was
 - Reporting a join as run when the agent that produced it reported partial coverage
@@ -787,7 +794,7 @@ rest mean: you are about to put something in a report that the sources do not su
 | Org scope | `search_*` with `org:{org}` — `list_*` can't span an org |
 | Track scope | `tracks.yml` + timeline, following `parent` for live title/owner/dates |
 | Release-shaped report | Group by Milestone, which cuts across tracks |
-| Which fields exist | `list_issue_fields` **once**, in Step 1, passed to every agent |
+| Which fields exist | `gh api /orgs/{org}/issue-fields` **once**, in Step 1, passed to every agent |
 | Which boards exist | `organization(login:){projectsV2}` **once**, in Step 1, passed down |
 | A card's `Status` disagrees with the timeline | A Notes line, citing both. Read `status-policy.yml` to know the intended mapping; never write it, never move the card |
 | Issue is on no board | Notes line. Report it; never add it. |
@@ -798,8 +805,8 @@ rest mean: you are about to put something in a report that the sources do not su
 | Actual dates | The timeline's `branch_created` and `done` |
 | A role has no field | Say the join couldn't run. Never substitute a different field. |
 | "Is this blocked?" | The dependency list endpoint, never `issue_dependencies_summary` |
-| Per-PR commit authorship | `pull_request_read(method: "get_commits")` |
-| Commits with no PR | `list_commits` with `since`/`until` |
+| Per-PR commit authorship | `gh pr view N --json commits` |
+| Commits with no PR | `gh api /repos/{o}/{r}/commits` with `since`/`until` |
 | Item has no assignee | `—`, flagged in Notes |
 | Commit author ≠ committer | Credit the author, plus `Co-authored-by:` names |
 | Bot accounts | Excluded from Who Did What; volume noted separately |
