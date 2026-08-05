@@ -28,8 +28,9 @@ no seed assets.
 Each of the three workflow skills carries **its own copy of the substrate**, under a `## The
 Substrate` heading: the deterministic paths, the bootstrap-and-pull preflight, the `tracks.yml`
 schema, the timeline event format, and what this org's Issue Fields actually are. Only the parts a
-skill uses — `/snapshot` has no write-access check, no append rules, and no view generation;
-start-work has no view generation.
+skill uses — `/snapshot` has no append rules and no `views/` regeneration; start-work has no view
+generation. `/snapshot` does carry a write-access preflight, but unlike end-work's it **never blocks
+the run** — without push access the report is still built and written locally.
 
 **This is a deliberate trade and it has a cost.** The substrate used to live in one place precisely
 so it couldn't drift. Now it is copied three ways, and the shared blocks are marked:
@@ -116,13 +117,37 @@ closes on a dirty run.
 **Explicitly invoked only** — `/snapshot`, not "where do things stand." Three layers (detail on the
 repos in scope, org rollup, who did what) plus the four joins that neither source can produce alone: planned vs.
 actual, effort vs. what the work took, declared vs. encountered dependencies, and a complete org
-rollup off one `git pull`. Read-only: the single file it writes is its own cursor. The layers and
+rollup off one `git pull`. It **reads the record and never writes it** — no events, no issue writes,
+no `views/` regeneration, no edit to anything already in the tracking repo. The layers and
 joins run as **four parallel read-only agents**, off one field discovery the skill performs and hands
 down. Attribution comes strictly from author/assignee/reviewer fields and the timeline's `dev`, bots
 excluded, and it must never rank or editorialize about anyone's output.
 
+**It does publish, and that is the one thing it writes.** The full report goes to a local gitignored
+copy *and* to `reports/YYYY-MM/<stamp>.md` in the tracking repo, committed and pushed on every run —
+one new file, never an edit. Chat gets a **SHA-pinned permalink** first, then a summary. The
+permalink is the point: GitHub renders mermaid, so the report is readable by anyone with repo access
+and no local tooling.
+
+It carries the two diagrams `views/` deliberately cannot — a **planned-vs-actual gantt**
+(`views/gantt.md` charts actuals only) and a **declared-vs-encountered dependency graph**
+(`views/dependencies.md` is built from the encountered side alone). Both files now live in the same
+repo under opposite rules, and **the axis is dated-vs-current, not local-vs-committed**: a view is
+regenerated to mean *now* and may cache nothing; a report is stamped *then*, written once, never
+rewritten, and is therefore an archive that may hold live state.
+
+**Publishing has a cost worth naming:** "Who Did What" is now permanent and linkable, so principle 4
+binds harder rather than softer.
+
 **What to probe:** that conversational phrasing doesn't trigger it; that it reads its cursor *before*
-offering window options; that it never comments, writes a field, or appends an event; that it
+offering window options; that it never comments, writes a field, or appends an event; that the
+commit adds **exactly one file** under `reports/` and never touches `tracks.yml`, `timeline/`, or
+`views/`; that a rejected push rebases and retries rather than regenerating (the opposite of the
+`views/` rule, and deliberately); that a published report is never amended or force-pushed; that no
+push access degrades to a local report rather than refusing to run; that a join reporting
+`ran: false` gets its reason printed rather than a diagram; that a gantt charting a subset of threads
+captions what it omitted; that no diagram charts people; that no finding lives *only* in a diagram,
+since the local copy and any failed-push run are read unrendered; that it
 **clones but never offers to create** the tracking repo, and degrades gracefully when the org has
 none; that planned dates come from the issue and actual dates from the timeline and never the
 reverse; that no agent runs its own field discovery; that agent prose never reaches the report;
@@ -199,6 +224,7 @@ in, absolute:
 | `<base>/.claude/.tracking/<org>/` | all three | clone of the org tracking repo |
 | `<base>/.claude/<org>.status.json` | start-work / end-work | `last_session` + the live `session` and its threads |
 | `<base>/.claude/<org>.snapshot.json` | `/snapshot` | one `last_checked` timestamp |
+| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | `/snapshot` | local copy of each run's report — derived, point-in-time, never read back. The published copy goes to `reports/` in the tracking repo |
 | `<base>/.claude/tracking-org` | all three | the org login, recorded once when nothing else answers |
 
 The two cursor files share **zero fields**, and neither skill opens the other's. Both live outside

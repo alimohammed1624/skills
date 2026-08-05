@@ -151,8 +151,13 @@ git -C <base> rev-parse --show-toplevel        # is there a repo, and where is i
 .claude/.tracking/
 .claude/*.status.json
 .claude/*.snapshot.json
+.claude/snapshots/
 .claude/tracking-org
 ```
+
+`.claude/snapshots/` holds `/snapshot`'s report documents. This skill never writes one, but the
+exclusion block is shared and is kept identical across all three skills — whichever runs first in a
+repo excludes everything, so no later run leaves a file exposed.
 
 **`.git/info/exclude` rather than `.gitignore` is the whole point.** `.gitignore` is a tracked file;
 writing it would modify the product repo's contents and land in someone's commit — and this skill's
@@ -234,11 +239,17 @@ is *not* a permission failure and must not be read as one.
 
 ```
 {org}/tracking
-├── README.md          ├── tracks.yml          └── views/          (generated)
-├── .gitattributes     ├── status-policy.yml       gantt.md
-                       └── timeline/               dependencies.md
-                           YYYY-MM/<dev>.jsonl
+├── README.md          ├── tracks.yml          ├── views/          (generated, means "now")
+├── .gitattributes     ├── status-policy.yml   │   gantt.md
+                       └── timeline/           │   dependencies.md
+                           YYYY-MM/<dev>.jsonl └── reports/        (/snapshot, means "then")
+                                                   YYYY-MM/YYYY-MM-DD-HHMM.md
 ```
+
+**`reports/` belongs to `/snapshot` alone** — this skill never writes, reads, regenerates, or
+cleans one, and a report is never a source for a view. Each is written once and never rewritten,
+which is what lets it carry the live issue state `views/` may not: a view is read as *now*, a report
+is stamped with *then*.
 
 **One branch, always** — never branched, force-pushed, squashed, or rebased. That linearity is what
 lets principle 3 hold.

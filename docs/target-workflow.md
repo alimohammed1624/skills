@@ -50,12 +50,31 @@ msa1624/tracking
 │   │   ├── nilendu.jsonl
 │   │   └── priya.jsonl
 │   └── 2026-08/
-└── views/                          generated, never hand-edited
-    ├── gantt.md
-    └── dependencies.md
+├── views/                          generated, never hand-edited — means "now"
+│   ├── gantt.md
+│   └── dependencies.md
+└── reports/                        /snapshot's dated reports — means "then"
+    └── 2026-08/
+        └── 2026-08-05-1142.md      written once, never rewritten
 ```
 
-**Two local cursor files**, one pair per org per machine, gitignored and never shared. They live
+**`views/` and `reports/` sit under opposite rules and the difference is the timestamp.** A view is
+regenerated to mean *now*, so it may hold no live issue state (decision 11). A report is stamped with
+the moment it describes, is never rewritten, and is therefore an archive rather than a cache — so it
+carries exactly the live state a view may not. See §8.3.1.
+
+**`<base>` is the directory the skill was invoked in**, resolved absolute with `pwd` on every run and
+recorded nowhere. Every local path below hangs off it. It is one of two shapes — an org repo
+(**layout R**), or a parent holding several org repo clones (**layout P**) — and `git rev-parse
+--show-toplevel` tells you which.
+
+**Nothing lives at `~/.claude/`.** That is Claude Code's own configuration directory and this design
+does not put org state in it. State is **per working directory, not per machine**: two directories
+on one machine each keep their own clone and cursors, even for the same org. The consequence is
+worth stating because it will bite someone — **a session opened in one directory is invisible from
+another.** Open and close a session from the same base.
+
+**Two local cursor files**, one pair per org **per base**, gitignored and never shared. They live
 outside `.claude/.tracking/`, which is a clone of a shared repo — a file that must survive a
 reclone, a `git clean`, or a bad rebase inside that clone cannot live where the clone's own git
 operations can reach it. The two are split by **who owns the write**:
@@ -65,23 +84,47 @@ operations can reach it. The two are split by **who owns the write**:
 - **`snapshot.json`** — when `/snapshot` last ran. Owned by `/snapshot`.
 
 ```
-~/.claude/
+<base>/.claude/
 ├── .tracking/
 │   └── msa1624/                    the working clone; skills pull, append, commit, push here
+├── snapshots/                      /snapshot's report documents — derived, never read back
+│   └── msa1624-2026-07-25-1442.md
 ├── msa1624.status.json             last + live session — start-work / end-work
 └── msa1624.snapshot.json           /snapshot's cursor — /snapshot
 ```
 
-**Product repos get nothing.** No cursor file, no clone, no tracking directory. Nothing this design
-creates lands inside a repo you work in, so none of it appears in a product repo's `git status` and
-no product repo needs a `.gitignore` entry for any of it.
+`snapshots/` is **output, not state**, and it is the *local* copy of each report — the published one
+goes to `reports/` in the tracking repo (§8.3.1). Nothing parses either — not the next `/snapshot`
+run, not any other skill — and deleting this directory loses nothing recomputable. It exists so a run
+still produces a readable report when the push fails, the tracking repo is missing, or the developer
+has no write access.
 
-**Write surfaces.** These skills write in exactly five places, and nowhere else:
+**Product repos get nothing *tracked*.** In layout P this is literal — `<base>/.claude/` is the
+parent directory and sits in no repo at all. In **layout R the base is inside a product repo**, so
+`.claude/` does land there physically, and the skills keep it invisible by writing the exclusion
+lines to `<toplevel>/.git/info/exclude`:
+
+```
+.claude/.tracking/
+.claude/*.status.json
+.claude/*.snapshot.json
+.claude/snapshots/
+.claude/tracking-org
+```
+
+**`.git/info/exclude`, never `.gitignore`.** `.gitignore` is tracked, so writing it would modify the
+product repo's contents and land in someone's commit — the exact thing the write-surface table below
+forbids. `.git/info/exclude` is local-only and untracked, so the exclusion costs the repo nothing.
+Nothing is excluded in layout P because there is no repo to exclude it from, and the lines are
+**never** written into the child repos.
+
+**Write surfaces.** These skills write in exactly seven places, and nowhere else:
 
 | Location | Writes permitted |
 |---|---|
-| `~/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The developer's yes is given at the confirmation block (§8.1, §8.2), not again at the push: showing the diff is a *disclosure* requirement, and waiting on it is a second gate on a decision already made. |
-| `~/.claude/<org>.{status,snapshot}.json` | Local cursor writes. No git involved. |
+| `<base>/.claude/.tracking/<org>/` | The only place anything is committed or pushed — always after showing the diff. The developer's yes is given at the confirmation block (§8.1, §8.2), not again at the push: showing the diff is a *disclosure* requirement, and waiting on it is a second gate on a decision already made. **`/snapshot` is the one exception to the confirmation rule**: it adds a single new file under `reports/` on every run without asking, because the run *is* the request and the write is its own output (§8.3.1). |
+| `<base>/.claude/<org>.{status,snapshot}.json` | Local cursor writes. No git involved. |
+| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | `/snapshot`'s local report copy, one per run, never overwriting an earlier one (§8.3.1). Gitignored, no git involved. |
 | Product repos | Branch creation and checkout, by start-work only (§8.1). No file contents modified, nothing committed, nothing pushed. |
 | Issues in product repos | Creation and field-setting by start-work (§8.1); status reconciliation by end-work (§8.2). Issue *bodies* are not rewritten. |
 | Projects v2 board items | Membership added by both workday skills, and `Status` moved per `status-policy.yml` (§3). No other board field is written without an established value. |
@@ -105,8 +148,12 @@ the mechanics. A PR whose base makes the keyword inert is reported unlinked, nev
 described as linked.
 
 ```mermaid
+%% Paths below use the CONCRETE example base (~/work), never the <base> placeholder
+%% the prose uses. Mermaid renders labels as HTML, so <base> is stripped as an unknown
+%% tag and "<base>/.claude/x.json" silently renders as "/.claude/x.json" — a plausible
+%% path that has lost its root. It parses cleanly, so nothing warns you. Keep it concrete.
 flowchart TB
-    subgraph LOCAL["Developer's machine"]
+    subgraph LOCAL["Developer's workspace — base is ~/work (layout P)"]
         direction TB
         subgraph WORK["product checkouts"]
             direction LR
@@ -114,9 +161,10 @@ flowchart TB
             P2["~/work/web"]
             P3["~/work/platform"]
         end
-        STATUS["~/.claude/msa1624.status.json<br/>last + live session"]
-        SNAP["~/.claude/msa1624.snapshot.json<br/>/snapshot's cursor"]
-        CLONE["~/.claude/.tracking/msa1624/<br/><b>clone of the tracking repo</b><br/>tracks.yml · timeline/ · views/"]
+        STATUS["~/work/.claude/msa1624.status.json<br/>last + live session"]
+        SNAP["~/work/.claude/msa1624.snapshot.json<br/>/snapshot's cursor"]
+        CLONE["~/work/.claude/.tracking/msa1624/<br/><b>clone of the tracking repo</b><br/>tracks.yml · timeline/ · views/ · reports/"]
+        REPORTS["~/work/.claude/snapshots/<br/>local report copies"]
     end
 
     REMOTE[("msa1624/tracking<br/>one branch, append-only")]
@@ -134,7 +182,8 @@ flowchart TB
     EW ==>|append events, regenerate views,<br/>commit + push| CLONE
     EW -.->|update issues, open PRs| GH
     PS["/snapshot"] --> SNAP
-    PS -.->|pulls, never authors| CLONE
+    PS --> REPORTS
+    PS ==>|adds ONE file to reports/,<br/>commit + push. Never edits<br/>tracks.yml, timeline/, or views/| CLONE
     PS -.->|read-only| GH
 ```
 
@@ -271,7 +320,7 @@ window, and overwrites it at the end of each run.
 ### No cross-reads
 
 The two files share no fields, and neither skill opens the other's. The tracking clone's location is
-not recorded in either: `~/.claude/.tracking/<org>/` is a deterministic path from `org`, which every
+not recorded in either: `<base>/.claude/.tracking/<org>/` is a deterministic path from `org`, which every
 skill derives from `git config --get remote.origin.url`. Bootstrap-if-missing and pull-before-use
 (§9) run on every invocation regardless, so there is nothing to cache.
 
@@ -657,9 +706,10 @@ GitHub, which is most people.
 ```mermaid
 sequenceDiagram
     participant D as Developer
+    %% Concrete base (~/work), not <base> — mermaid strips it as an HTML tag. See §2's diagram.
     participant S as end-work
     participant P as every session worktree
-    participant T as ~/.claude/.tracking/msa1624
+    participant T as ~/work/.claude/.tracking/msa1624
     participant G as GitHub
 
     D->>S: wrap up
@@ -669,7 +719,7 @@ sequenceDiagram
     S->>P: git status + unpushed check in EVERY session worktree
     Note over S,P: BLOCKING — the developer's own work,<br/>across every repo the session touched
     S->>G: live issue/PR state for the session window
-    S->>G: update statuses, assignees, dependency links; reconcile push activity
+    S->>G: update statuses, assignees, dependency links — reconcile push activity
     S->>G: move board Status per status-policy.yml (§3)
     S->>G: open PRs over pushed work — link + board them
     Note over S,G: closing keyword is INERT off the default branch:<br/>check the base, record linked:true|false
@@ -714,8 +764,11 @@ org-scoped, per-developer report only runs when someone asks for it.
 Three layers: current repo detail, org-wide rollup, and who-did-what. Attribution comes strictly
 from author/assignee/reviewer fields.
 
-**Read-only means it never authors.** No events, no commits, no GitHub writes — including no board
-`Status` moves; the only file it writes is its own `snapshot.json` cursor. It reads
+**It reads the record and never writes it.** No events, no issue writes, no board `Status` moves, no
+`views/` regeneration, and no edit to anything already in the tracking repo. What it *does* write is
+its own output: the `snapshot.json` cursor, a local report copy, and one new file under `reports/`
+which it commits and pushes (§8.3.1). The test for any write is whether something else would read it
+as a source — if yes, `/snapshot` must not write it. It reads
 `status-policy.yml` to know what the moments *should* map to, which makes a card disagreeing with
 the timeline a reportable finding (§3) rather than noise — reported, never corrected. It does clone the tracking repo if missing and pull it
 before every run (§9) — sync is not authorship, and a report built on a stale clone is wrong. **But
@@ -756,6 +809,86 @@ timeline history — computed at report time and cached nowhere:
 Milestone is available on every issue and is the natural grouping for a release-shaped report, which
 cuts across tracks rather than following them (§5).
 
+#### 8.3.1 Where the report goes, and why it is published
+
+Two byte-identical copies of one document, both stamped with the same UTC timestamp the run writes
+to `last_checked`:
+
+| Copy | Path | Purpose |
+|---|---|---|
+| Local, first | `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | Survives a failed push, a missing tracking repo, or no write access. Gitignored via `.git/info/exclude` (§2) |
+| Published | `<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM.md` | Committed and pushed every run. **GitHub renders the mermaid**, so a SHA-pinned permalink is a rendered report for anyone with repo access and no local tooling |
+
+Chat gets the permalink first, then a summary, the local path, and — always — which comparisons ran
+and which repos weren't covered.
+
+**Publishing is why the diagrams are worth drawing.** Mermaid needs a renderer; the most reliable
+one available here is GitHub itself. `/snapshot` has no mermaid dependency and never invokes or
+probes for one — it writes fenced text and lets the surface render it.
+
+**Writing it is not authoring the record.** The law protects what anything else reads as truth: the
+timeline, issues, boards, `views/`. A report is `/snapshot`'s own output, added as one new file,
+never amended, and read by nobody as a source.
+
+**The report may hold live state; a view may not** — and the axis is **dated vs. current**, not
+local vs. committed. `views/` is regenerated every end-work run to mean *now*, so it is built from
+the timeline and `tracks.yml` alone and labels nodes from the `title` captured on `branch_created`
+(§7, decision 11); a live value in a current-picture file is a cache that goes stale invisibly. A
+report says "as of 2026-08-05T11:42Z" in its filename and its header, is written once, and is never
+rewritten — so live titles and live field values are correct in it. Nothing can mistake it for
+current state.
+
+**Operational rules**, each with a reason that does not generalize to the other skills:
+
+- **Write-access preflight, but it never blocks.** No push rights → build the report, write it
+  locally, say it could not be published. This deliberately differs from end-work, which *refuses*
+  to run without access: end-work's output is events, and banking events nobody will see is
+  dishonest, whereas a report is self-contained and worth the same on disk.
+- **Exactly one added path per commit**, verified with `git status --porcelain` before committing.
+  Anything else staged means another process touched the clone, and committing it would make
+  `/snapshot` the author of a change it never intended.
+- **Rejected push → rebase and retry once. Never discard, never regenerate.** The opposite of the
+  `views/` rule, because a view is derivable and a report describes a moment that has passed —
+  regenerating would produce a *different* report under the same timestamp.
+- **Reports are immutable.** A wrong one is superseded by the next run, never amended or
+  force-pushed. A rewritten permalink is a permalink that lies.
+- **Permalinks pin to the commit SHA**, never a branch ref.
+
+**What publishing costs, stated plainly.** Every run now puts a permanent, linkable, per-person
+record of a work window into a shared repo — "Who Did What" no longer evaporates. Principle 4
+therefore binds *harder*: no ranking, no scoring, no durations, no evaluative word about anyone's
+week, and anything borderline is left out. The audience is everyone with repo access, not just the
+person who ran it.
+
+It carries two mermaid diagrams, and both exist precisely because the committed views cannot draw
+them:
+
+- **Planned vs. actual gantt.** `views/gantt.md` charts actuals only, so this is the only place the
+  planned side — live from the `Start date` / `Target date` fields — appears on the same axis as
+  `branch_created` and `done`. Day granularity, no durations (principle 4). "Planned but never
+  started" shows as a planned bar with no actual bar.
+- **Declared vs. encountered dependency graph.** `views/dependencies.md` is built from the
+  encountered side alone, so this is the only place the two sources can be seen disagreeing. Three
+  edge shapes: both, encountered-only, declared-only. **No inferred edges and no search candidates**,
+  in the graph exactly as in the prose.
+
+**A diagram is bound to its join.** If a join reports `ran: false`, its reason is printed where the
+block would have gone — a chart standing in for a not-run analysis is read as the analysis having
+run. A gantt charting a subset of threads captions how many it omitted and why.
+
+**Nothing charts people.** No contributor graph, no commit-volume bars, no per-person timeline.
+Principle 4 binds hardest in a diagram: a chart of people ranks them by its shape, whatever its
+caption says.
+
+**The diagrams are additive, never load-bearing.** `/snapshot` has no mermaid dependency — it writes
+fenced text and never invokes or checks for a renderer. Whether that becomes a picture is the
+reader's viewer, and the likely case is that it does not: the most reliable mermaid renderer in this
+workflow is GitHub, which is exactly the surface a never-pushed document cannot reach. So **every
+finding a diagram shows is also written out in prose beneath it**, and captions and legends sit
+outside the fence. A reader with a pager loses the shape of a finding and none of its substance.
+Rendering it by pushing it somewhere would trade a fresh local report for a stale shared cache,
+which is the trade this whole design refuses.
+
 ---
 
 ## 9. Bootstrap & Access
@@ -763,9 +896,9 @@ cuts across tracks rather than following them (§5).
 | Situation | Behaviour |
 |---|---|
 | Tracking repo does not exist for the org | **start-work / end-work:** offer to create it — **with confirmation**. Creating a repo is outward-facing and never happens implicitly. **`/snapshot`: never offers.** Cloning is sync; creating is authorship. It reports the absence, names start-work, and runs the GitHub-only layers with the timeline joins reported as not-run. |
-| Repo exists, no local clone | Clone to `~/.claude/.tracking/<org>/` — a deterministic path, nothing to record. Whichever of start-work, end-work, or `/snapshot` runs first bootstraps it; the others find it present. |
+| Repo exists, no local clone | Clone to `<base>/.claude/.tracking/<org>/` — a deterministic path, nothing to record. Whichever of start-work, end-work, or `/snapshot` runs first bootstraps it; the others find it present. |
 | Clone exists but is stale | `git pull --rebase` at the start of every start-work, end-work, and `/snapshot` run. Not conditional on a stored sync timestamp — there isn't one. |
-| Developer has no write access | **end-work refuses to run**, checking push access before writing anything rather than banking events nobody will see. start-work and `/snapshot` work in full, since both only read. A `--local-only` escape hatch exists for someone knowingly accepting an unshared record; it is never the default and never silent. |
+| Developer has no write access | **end-work refuses to run**, checking push access before writing anything rather than banking events nobody will see. **start-work works in full** (it only reads until its final step). **`/snapshot` also works in full** — it builds the report and writes the local copy, losing only the published permalink; a report is self-contained, unlike an event nobody will see. A `--local-only` escape hatch exists for someone knowingly accepting an unshared record; it is never the default and never silent. |
 | Empty `tracks.yml` | "Task in an existing track" is not offered in the question tree; the flow degrades to "brand new track" with no special case. |
 | A field or relationship looks unsettable | Walk both rungs before saying it cannot be set, then name what was tried. Running out of time makes a field *unset*, never *unsettable*. |
 | Owner is a personal account | Issue Fields and issue types do not exist there. The analyses that depend on them degrade per §5 and say so; nothing is approximated to fill the gap. |
@@ -814,9 +947,10 @@ developer never named is something they are told about, even when it is exactly 
 | Question | Answer |
 |---|---|
 | Where does the timeline live? | A dedicated org-level repo, `<org>/tracking`, with exactly one branch. |
-| Where do the local cursors live? | `~/.claude/<org>.status.json` and `~/.claude/<org>.snapshot.json` — outside `.tracking/`, one pair per org per machine. |
+| Where do the local cursors live? | `<base>/.claude/<org>.status.json` and `<base>/.claude/<org>.snapshot.json` — outside `.tracking/`, one pair per org **per base**, where `<base>` is the directory the skill was invoked in. **Never `~/.claude/`**, which is Claude Code's own config directory. |
+| Per machine or per directory? | **Per working directory.** Two bases on one machine keep separate clones and cursors for the same org, and a session opened in one is invisible from another. |
 | How many cursor files, and who owns them? | Two, fully independent. `status.json` → start-work / end-work. `snapshot.json` → `/snapshot`. Zero shared fields, no cross-reads. |
-| Where is the tracking clone's path recorded? | Nowhere. `~/.claude/.tracking/<org>/` is derived from `org` on every run. |
+| Where is the tracking clone's path recorded? | Nowhere. `<base>/.claude/.tracking/<org>/` is derived from `org` on every run. |
 | What does `tracks.yml` store? | Four fields: `id`, `parent`, `status`, `exit_criteria`. |
 | Does anything move a card across the board's columns? | Yes — start-work fires `issue_created`, `branch_created`, `resumed`; end-work fires `blocked`, `unblocked`, `pr_opened`, `handoff`, `done`. All from `status-policy.yml` (§3). |
 | What if there's no `status-policy.yml`? | The transition renders `— ask` with the board's real options, and the file is written on the yes. It is never seeded, and a mapping is never inferred from column names. |
@@ -824,6 +958,10 @@ developer never named is something they are told about, even when it is exactly 
 | What fields does every issue carry? | Whatever the org defines, discovered at call time. The workflow needs roles — ordering, planned start, planned finish, sizing — plus Milestone and Relationships. Set at creation: researched, shown with their sources, and confirmed before writing (§5). |
 | Who does the looking-up? | The skill, not the developer. Research runs as read-only subagents in parallel, and nothing they return is written until it has passed the return gate and the developer has accepted the block. |
 | Do generated views contain issue state? | No. Timeline and `tracks.yml` only. Every issue-vs-timeline comparison — planned/actual, sizing/actual, declared/encountered dependencies — is computed by `/snapshot` at report time. |
+| Then how can `/snapshot`'s report hold live state, when it is committed too? | The axis is **dated vs. current**, not local vs. committed. A view is regenerated to mean *now*; a report is stamped with *then*, written once, never rewritten — an archive, not a cache. That is what lets it draw the planned-vs-actual gantt and the declared-vs-encountered graph `views/` deliberately cannot (§8.3.1). |
+| Where does the snapshot report go, and is it shared? | Two copies: local at `<base>/.claude/snapshots/<org>-<stamp>.md` (gitignored), and published at `<clone>/reports/YYYY-MM/<stamp>.md`, committed and pushed every run. **Yes, it is shared** — anyone with repo access can open the SHA-pinned permalink, and GitHub renders its mermaid. |
+| Does `/snapshot` need push access? | To publish, yes. To *run*, no — without it the report is still built and written locally, and only the permalink is lost. |
+| Can a published report be corrected? | No. It is immutable: superseded by the next run, or reverted by a human. `/snapshot` never amends or force-pushes one. |
 | Is timeline history ever compacted? | No. |
 | How are `views/` conflicts resolved? | Discarded and regenerated. `merge=union` covers `*.jsonl` only. |
 | Who owns session lifecycle? | start-work — opens, resumes (`session_resume`), and closes abandoned sessions (`session_end {inferred:true}`). |
@@ -890,8 +1028,9 @@ At wrap-up, end-work reads `session.threads[]` and runs the blocking check in al
 worktrees, not just the one the developer is standing in.
 
 ```mermaid
+%% Concrete base (~/work), not <base> — mermaid strips it as an HTML tag. See §2's diagram.
 flowchart TD
-    EW([end-work]) --> LOAD["Read session.threads from<br/>~/.claude/msa1624.status.json"]
+    EW([end-work]) --> LOAD["Read session.threads from<br/>~/work/.claude/msa1624.status.json"]
     LOAD --> LOOP["For EVERY worktree in the derived set<br/>(never empty, even with no session)"]
     LOOP --> A["~/work/api<br/>git status + unpushed check"]
     LOOP --> B["~/work/web<br/>git status + unpushed check"]

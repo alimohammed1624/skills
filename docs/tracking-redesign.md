@@ -18,6 +18,14 @@
 > files — `status.json` (start/end-workday) and `snapshot.json` (`/snapshot`) — because a merged
 > file made `/snapshot` a plausible place to look for workday state, which is exactly the confusion
 > the original merge was trying to avoid, just moved one level down. See `target-workflow.md` §4.
+>
+> A fourth reversal: **local state moved from `~/.claude/` to `<base>/.claude/`**, where `<base>` is
+> the directory Claude was invoked in. Item 8 below still records the home-directory answer, which is
+> the reasoning as it stood. **Nothing lives at `~/.claude/`** — that is Claude Code's own config
+> directory. The consequence is that state is per working directory, not per machine: two bases on
+> one machine keep separate clones and cursors for the same org, and a session opened in one is
+> invisible from another. This is also what let the skills support a workspace spanning several repo
+> clones (layout P). See `target-workflow.md` §2.
 
 ---
 

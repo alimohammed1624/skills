@@ -11,6 +11,15 @@ A three-layer, org-scoped, per-developer report: **detail on the repos in scope*
 rollup**, and **who did what**. Each layer joins live GitHub state against timeline history — computed at
 report time and cached nowhere.
 
+**It delivers in three places.** The full report — three layers, four joins, and the two mermaid
+diagrams — is written locally under `<base>/.claude/snapshots/`, then **committed and pushed to
+`reports/` in the tracking repo**, where GitHub renders the mermaid. The chat gets a brief summary,
+the local path, and a **permalink pinned to the commit SHA**. See *The Report Document*.
+
+**This skill publishes.** It is the one part of `/snapshot` that writes something other people can
+see, and it does so on every run without asking — that is the configured behaviour, not an oversight.
+Everything else it touches, it only reads.
+
 **Announce at start:** "I'm using the snapshot skill to build your report."
 
 **READ *The Substrate* BELOW FIRST.** It holds the paths, bootstrap procedure, cursor schema, and
@@ -23,13 +32,22 @@ impossible until both have been walked.
 ## The Iron Law
 
 ```
-READ, NEVER AUTHOR.
+READ THE RECORD, NEVER WRITE IT. PUBLISH ONLY YOUR OWN REPORT.
 STATE COMES LIVE. HISTORY COMES FROM THE TIMELINE.
 REPORT WHICH COMPARISON YOU ACTUALLY RAN.
 ```
 
 The value is entirely in joining the two sources. A degraded join presented as the full analysis is
 worse than no join — it looks complete to the person acting on it.
+
+**The law used to read "READ, NEVER AUTHOR," and the change is real.** This skill now commits and
+pushes. What did *not* change is the part that mattered: it writes **nothing that anything else
+reads as truth**. No timeline event, no issue, no board card, no `views/` file — those are the
+record, and they stay closed. `reports/` is its own output, written once, never amended, and read by
+nobody but a human.
+
+The test for any new write: **would another run, another skill, or another developer treat this as a
+source?** If yes, this skill must not write it.
 
 ## Explicitly Invoked Only
 
@@ -41,14 +59,29 @@ report.
 **Don't use for:** opening a work session or triaging what to do next — that's start-work, which is
 scoped to open work rather than to a window.
 
-## Read-Only Means It Never Authors
+## What It Writes, and What It Never Touches
 
 | Never | Only |
 |---|---|
 | No timeline events | Its own `<base>/.claude/<org>.snapshot.json` cursor |
-| No commits or pushes to the tracking repo | |
-| No issue comments, field writes, closures, or labels | |
+| No `views/` regeneration, and no edit to any existing file in the tracking repo | Its own report document under `<base>/.claude/snapshots/` |
+| No issue comments, field writes, closures, or labels | Its own **new** file under `reports/` in the tracking repo, committed and pushed |
 | No board membership adds and no `Status` moves — a stale card is reported, never corrected | |
+
+**`reports/` and `views/` live in the same repo under opposite rules, and confusing them is the
+likeliest way to break this design:**
+
+| | `views/` | `reports/` |
+|---|---|---|
+| Owner | end-work | `/snapshot` |
+| Means | **now** — regenerated every run | **then** — one moment, stamped in the filename |
+| Live issue state | **Forbidden.** A regenerated "current picture" holding a cached assignee is wrong with no visible symptom | **Expected.** That is the report |
+| Rewritten | Every end-work run | **Never.** Written once, then immutable |
+| On conflict | Discard and regenerate | **Rebase and retry. Never discard, never regenerate** — see *Publishing* |
+
+A timestamped report is an **archive**, not a cache: nobody reads "as of 2026-08-05T11:42Z" as a
+claim about now. A regenerated view carries no such date and is read as current — which is exactly
+why it may hold nothing live. **Never "fix" one rule to match the other.**
 
 It **does** clone the tracking repo if missing and pull it before every run — sync is not
 authorship, and a report built on a stale clone is wrong.
@@ -122,7 +155,13 @@ comes from its children. Falling back to the recorded answer is the designed pat
 |---|---|
 | Tracking clone | `<base>/.claude/.tracking/<org>/` |
 | Snapshot cursor | `<base>/.claude/<org>.snapshot.json` |
+| Report documents *(local)* | `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` |
+| Report documents *(published)* | `<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM.md` |
 | Org record | `<base>/.claude/tracking-org` |
+
+The published path carries no `<org>` prefix — inside `{org}/tracking` the org is the repo. It is
+foldered by month like `timeline/`, and **the timestamp is the same one in the local filename and in
+`last_checked`**, which is what lets a local copy and a permalink be matched up later.
 
 `<base>/.claude/<org>.status.json` belongs to start-work and end-work. **Never open it** — its boundaries
 mean something else, and this skill's window never comes from there.
@@ -134,21 +173,39 @@ thing. If the clone had to be created this run, say so rather than reporting a q
 Writing `tracking-org` is the **one** exception to the write-surface table below: it is local
 configuration, not record content, and without it a base with no remote can never run this skill.
 
-### Write surfaces — one, and nowhere else
+### Write surfaces — these three, and nowhere else
 
 | Location | Writes permitted |
 |---|---|
-| `<base>/.claude/<org>.snapshot.json` | The `last_checked` timestamp. Nothing else, anywhere. |
+| `<base>/.claude/<org>.snapshot.json` | The `last_checked` timestamp. Nothing else in the file. Local. |
+| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | This run's report document. A new file each run; **never an overwrite of an earlier one**. Local and gitignored. |
+| `<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM.md` | The same report, committed and pushed. **A new file only** — never a modification, rename, or deletion of anything already in the tracking repo, and never a touch to `tracks.yml`, `timeline/`, `status-policy.yml`, or `views/`. |
 
-No events, no commits, no issue comments, no field writes, no labels, no closures.
+No events, no issue comments, no field writes, no labels, no closures. **The one commit this skill
+ever makes adds exactly one file.** If a `git status` in the clone shows anything else staged, stop
+and say so — a snapshot run that would commit a second path has gone wrong somewhere upstream.
 
 ### Bootstrap *(snapshot variant — clones, never creates)*
 
 **B0.** Resolve the base (`pwd`, absolute), then the layout and repo set, then the org — the current
 repo's or the children's remotes, then `<base>/.claude/tracking-org`, then ask once and record it.
-Then, **in layout R only**, ensure the exclusion lines are in that repo's `.git/info/exclude`; in
-layout P `<base>/.claude/` sits in no repo, so there is nothing to exclude and nothing to write into
-the children. No path below is computable until the base and org answer.
+Then, **in layout R only**, ensure the exclusion lines are in that repo's `.git/info/exclude` —
+**`.git/info/exclude`, never `.gitignore`**, which is tracked and would land the exclusion in
+someone's commit:
+
+```
+.claude/.tracking/
+.claude/*.status.json
+.claude/*.snapshot.json
+.claude/snapshots/
+.claude/tracking-org
+```
+
+`.claude/snapshots/` matters here more than the rest: it is the one path this skill *creates*, and
+an unexcluded report document is a file full of live issue state sitting in the developer's
+`git status`. **Ensure the line before writing the first document**, not after. In layout P
+`<base>/.claude/` sits in no repo, so there is nothing to exclude and nothing to write into the
+children. No path below is computable until the base and org answer.
 
 **B1.** `git -C <base>/.claude/.tracking/<org> rev-parse --git-dir 2>/dev/null`. Present → pull. Missing →
 `gh repo view {org}/tracking` (a 404 means it does not exist).
@@ -161,7 +218,25 @@ this skill does the first only. Report that `{org}` has no tracking repo, name s
 to create one, and run degraded — see Step 1.
 
 **B3.** `git -C <base>/.claude/.tracking/<org> pull --rebase`, every run. There is no stored sync
-timestamp and nothing is conditional on one. **No write-access check** — this skill only reads.
+timestamp and nothing is conditional on one.
+
+**B4. Write-access preflight — and it never stops the run.**
+
+```bash
+gh repo view {org}/tracking --json viewerPermission -q .viewerPermission   # WRITE / MAINTAIN / ADMIN can push
+```
+
+Check it **here**, before the expensive research wave, so the answer is known by the time there is
+something to publish.
+
+**No access → run in full anyway.** Build the report, write it locally, and say plainly that it
+could not be published and why. **This is the one place `/snapshot` deliberately parts company with
+end-work**, which refuses to run without push access: end-work's output is *events*, and banking
+events nobody will ever see is dishonest, whereas a snapshot report is self-contained and worth
+exactly as much on disk as it is on GitHub. A read-only collaborator loses the permalink and nothing
+else.
+
+Never treat missing access as a reason to skip the report, and never ask for a permission grant.
 
 ### `<org>.snapshot.json`
 
@@ -292,8 +367,9 @@ timestamp.
 
 Derive org and repo from `git config --get remote.origin.url`. Clone the tracking repo if it exists
 but isn't cloned, then `git pull --rebase`. See **_The Substrate_ → Bootstrap**, whose B2
-table names `/snapshot` explicitly: it clones, and it never offers to create. No write-access check —
-this skill only reads.
+table names `/snapshot` explicitly: it clones, and it never offers to create. **Run the B4
+write-access preflight here too** — knowing now whether the report can be published costs one call
+and avoids discovering it after the whole research wave has run. A `no` never stops the run.
 
 **If `{org}/tracking` does not exist**, run degraded rather than stopping: Steps 2–4 work against
 GitHub alone, and the planned-vs-actual, sizing-vs-actual, and declared-vs-encountered joins each
@@ -335,9 +411,12 @@ NEVER call setIssueFieldValue, addProjectV2ItemById,
 updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
 edit/create/close/comment, gh project item-add/item-edit, or
 gh pr create/edit/merge/review. You CAN call these tools; not calling them is the
-rule you are being held to. This report writes NOTHING to GitHub — if something seems
+rule you are being held to. YOU write NOTHING to GitHub — if something seems
 to need a write, return it in asks[]. end-work opens PRs; /snapshot never does, and
 neither do you.
+The skill that dispatched you does publish its own report file to the tracking repo
+at the end of the run. That is its write, not yours, and it is not a licence for
+any write here. Nothing you can call is on that path.
 DO NOT read the timeline, tracks.yml, or status.json. Everything you must compare
 against is supplied in your INPUT. Sourcing both sides of a comparison yourself
 turns it into a set compared with itself, which looks fine and means nothing.
@@ -457,7 +536,7 @@ activity — it goes in not_covered.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write — in a skill whose Iron Law is READ, NEVER AUTHOR, that is the loudest possible finding. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. The skill publishing its own report file changes nothing here — no agent has any write surface at all, and one reaching for the record is the loudest possible finding. |
 | **No ranking** — `people` keys alphabetical; no `rank`/`score`/`total`/`percentile`/`top_*`/`velocity` key; nothing sorted by a count; `themes` free of evaluative words | **Drop the layer.** Say the contribution layer could not be rendered safely. |
 | **Comparison label** names the roles you actually passed in | Reject the join; print it as not-run. |
 | **Discovery** — every field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
@@ -633,9 +712,29 @@ Trap.
 One `git pull` plus local file reads covers every developer, track, and repo. Say what the timeline
 covers: a repo with no timeline events isn't inactive, it's untracked, and those are different.
 
-### Step 6: Report, Then Write the Cursor
+### Step 6: Write, Publish, Summarize, Then Write the Cursor
 
-Deliver the report, then overwrite `last_checked`. That is the only file this skill writes.
+In this order, and the order is the failure design:
+
+1. **Ensure `.claude/snapshots/` is excluded** (layout R) and the directory exists.
+2. **Write the document locally** — the full report, every layer, every join, both diagrams.
+3. **Publish it** — copy into `<clone>/reports/YYYY-MM/`, verify exactly one path is staged, commit,
+   push, and capture the SHA. Skip if B4 found no write access or the tracking repo does not exist.
+   On rejection: `pull --rebase`, push once more, then give up gracefully. See *Publishing*.
+4. **Print the chat summary** — the permalink first, then headline counts, the "which comparison I
+   ran" line, the findings worth acting on, and the local path. Not the whole report.
+5. **Overwrite `last_checked`** with this run's timestamp — the same one in both filenames.
+
+**Every failure degrades one step and stops:**
+
+| What failed | What still happens |
+|---|---|
+| The push | Local copy stands. Summary says it is unpublished, and why. Cursor still written |
+| No write access, or no tracking repo | Same, minus the attempt. Never a reason to skip the report |
+| The local write | Say so and **print the full report in chat**. A failed write must never silently downgrade the run to a summary of a report nobody can read |
+
+The cursor is written last and is written **whatever happened above** — the run occurred, and the
+next "since last check" window must start from it.
 
 ## Identifying Items
 
@@ -651,14 +750,281 @@ cross-referencing, identify each item by its **title, rendered as a markdown lin
 
 Someone should understand each bullet on one read, without opening GitHub.
 
+## The Report Document
+
+### Where it goes
+
+Two copies of one byte-identical document:
+
+```
+<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md      local, gitignored, written first
+<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM.md             committed and pushed, renders on GitHub
+```
+
+UTC, **the same timestamp in both filenames and in `last_checked`**, so the local copy, the
+permalink, and the cursor all point at one run. One new file per run in each place. Never overwrite
+an earlier document — they accumulate, nothing prunes them, and this skill deletes none of them.
+
+**Local first, always, and not as a formality.** The local write is what makes the run survive a
+push failure, a missing tracking repo, or no write access. A run that publishes but never wrote
+locally has no fallback when the push is rejected.
+
+**The document is output, not a record**, and publishing does not change that:
+
+| It is | It is not |
+|---|---|
+| Derived — every line recomputed from live GitHub plus the timeline | A source anything reads back. **No skill ever parses one**, including this one on its next run |
+| Point-in-time, stamped, correct only as of its timestamp — an **archive** | A cache. A day-old document describes a day-old org and is not evidence of anything now |
+| Committed once, then immutable | A file to amend, regenerate, or correct later. A wrong report is superseded by the next run, never edited |
+| Shared, and permanently linkable | Private. It names people and what they worked on — see *What publishing means* |
+
+Open it with a header saying exactly that:
+
+```
+<!-- Generated by /snapshot at 2026-08-05T11:42:03Z. Point-in-time output, not a record.
+     Nothing reads this back. Safe to delete.
+     Diagrams are mermaid. If your viewer shows the source, nothing is missing —
+     every finding is also written out beneath its diagram. -->
+```
+
+### Live titles are correct here — unlike in `views/`
+
+`views/gantt.md` and `views/dependencies.md` label their nodes from the `title` captured on
+`branch_created`, never a live lookup, because those files are **regenerated to mean "now"** and a
+live title baked into a current-picture file is a cache that silently goes stale.
+
+**The snapshot document is stamped and never rewritten, so it uses live titles** — which is the
+whole reason it can render joins the committed views cannot. Both now sit in the same repo; the
+difference is not local-vs-committed but **dated-vs-current**. Do not "correct" one to match the
+other.
+
+### Publishing
+
+After the local write, and only if the write-access preflight (B4) said yes:
+
+```bash
+mkdir -p <clone>/reports/YYYY-MM
+# copy the document in, byte-identical to the local one
+git -C <clone> add reports/YYYY-MM/YYYY-MM-DD-HHMM.md
+git -C <clone> status --porcelain          # MUST show exactly one added path
+git -C <clone> commit -m "snapshot: {window description} ({YYYY-MM-DD HHMM}Z)"
+git -C <clone> push
+git -C <clone> rev-parse HEAD              # the SHA the permalink pins to
+```
+
+**Check `status --porcelain` before committing, every time.** One added path is the only acceptable
+result. Anything else — a modified `views/` file, a stray `tracks.yml` edit, a rebase leftover — means
+something else touched the clone, and committing it would make `/snapshot` the author of a change it
+never intended. Stop, report what was staged, and publish nothing.
+
+**Build the permalink from the SHA, never from the branch:**
+
+```
+https://github.com/{org}/tracking/blob/{full-sha}/reports/{YYYY-MM}/{YYYY-MM-DD-HHMM}.md
+```
+
+**On a rejected push — rebase and retry. Never discard, never regenerate.** Report filenames are
+unique per run, so there is no content conflict to resolve: `git -C <clone> pull --rebase` then push
+again, once. This is the **opposite** of end-work's rule for `views/`, and the difference is not
+arbitrary — a view is derivable, so regenerating it is always correct, whereas a report describes a
+moment that has already passed. Regenerating it would silently produce a *different* report under
+the same filename.
+
+**If the push still fails**, keep the local copy, say the report exists locally and could not be
+published, and give the reason. Never retry in a loop, never force, and never `--force-with-lease`.
+
+**If `{org}/tracking` does not exist**, there is nothing to publish to. Report locally and name
+start-work as the way to create the repo — creating one is authorship and outward-facing, and this
+skill still never does it.
+
+### What publishing means
+
+Every run now puts a permanent, linkable, per-person record of a work window into a shared repo.
+That is the intended behaviour, and it deserves to be stated rather than discovered:
+
+- **"Who Did What" is durable now.** A local file evaporated; a commit does not. Someone can link to
+  what a named person did in a given week, forever.
+- **Principle 4 therefore binds harder, not softer.** No ranking, no scoring, no durations, no
+  evaluative word about a person or their week — the guardrails do not relax because the artifact
+  became shareable. If anything is borderline, leave it out.
+- **The audience is everyone with repo access**, not just the person who ran it. Write it that way.
+- **A report is never edited to soften it.** It is superseded by the next run, or the commit is
+  reverted by a human who decides it should not be there. `/snapshot` does neither.
+
+### Rendering — GitHub does it, and the prose still stands alone
+
+**This skill has no mermaid dependency and never invokes one.** It writes fenced ```` ```mermaid ````
+text; rendering is the reader's surface, and the skill neither installs, probes, nor checks for a
+renderer. Nothing to set up on any machine.
+
+**Publishing is what makes the diagrams reliably visible** — GitHub renders mermaid in markdown, so
+the permalink is a rendered report for anyone with repo access and no local tooling at all. That is
+the reason publishing exists, so **lead the chat summary with the permalink**, not the local path.
+
+**But the prose invariant does not relax.** The local copy is read in whatever the developer has,
+raw files get opened in pagers, and a failed push leaves the local copy as the only copy:
+
+| Surface | What the reader gets |
+|---|---|
+| The GitHub permalink | A rendered diagram — the reason this is published |
+| Obsidian, GitHub-flavoured previewers, most modern IDE markdown plugins | A rendered diagram |
+| VS Code's built-in preview | Source, unless a mermaid extension is installed |
+| `cat`, `bat`, `less`, `glow`, any terminal pager | Source |
+| Claude, asked to read the file | Source, read perfectly well |
+
+**So the diagrams are additive, never load-bearing — and this is a hard rule:**
+
+> **Every finding a diagram shows must also appear in the prose beneath it.**
+
+The gantt sits above the planned-vs-actual bullets; the graph sits above the hit-but-never-declared
+and declared-but-never-hit lists. A reader whose viewer shows raw mermaid loses the *shape* of the
+finding and none of the finding itself. Captions — the omitted-thread count, the edge-shape legend —
+go **outside** the fence for the same reason: they are the part that must survive unrendered.
+
+A finding that exists only as a node, an edge, or a bar is invisible to a reader with a pager, and
+that reader has no way to know they missed it.
+
+### The two diagrams
+
+Both are **mermaid**, and both exist because they show something no table and no committed view can.
+Each is bound to a join: **if the join reported `ran: false`, there is no diagram** — print its
+`phrase` verbatim in place of the block. A diagram drawn past a join that did not run is the most
+convincing way this skill could lie.
+
+#### Diagram 1 — planned vs. actual *(from `join_planned_vs_actual`)*
+
+`views/gantt.md` charts **actuals only**, because it is regenerated to mean "now" and a planned date
+baked into a current-picture file is a cache. This document is dated, so it is where both sides
+appear on one axis — which is the point of the join. Both files now sit in the same repo; only one
+of them carries a timestamp, and that is what licenses the difference.
+
+- **One `section` per thread**, labelled with the repo shortname, `#N`, and the title — `api#43
+  refund flow`. The full `owner/repo#N` lives in the prose bullets under the chart, which is where
+  someone cross-references from.
+- **Two bars per thread**: `planned` from the planned-start / planned-finish fields, fetched live;
+  `actual` from `branch_created` and `done`. **Never build one side from the other's source.**
+- Task ids follow the established shortname convention — `p_api43` for planned, `a_api43` for
+  actual — which keeps them mermaid-safe.
+- Bar tags: planned is untagged; actual is `active` while the thread is open, `done` once it has a
+  `done` event, and takes `crit` as well when the verdict is `started_late` or `ran_long`.
+- **Planned but never started** — dates on the issue, no `branch_created` — is a planned bar with no
+  actual bar and ` (never started)` on the section label. It is one of the most useful things this
+  join produces; never drop it for being half-empty.
+- A zero-width bar gets a `1d` duration, matching `views/gantt.md`.
+- **Day granularity, and no durations, ever** (principle 4). The chart places work on an axis; it
+  does not measure how long anyone took.
+- **Issue titles appear only in section labels, never on a task line** — the task name is always the
+  literal word `planned` or `actual`. That is what makes arbitrary titles safe here: a task line is
+  colon-delimited, and a title carrying a colon lands in the parser's data segment. Section labels
+  run to end of line and take colons, parentheses, and `#` without escaping.
+- **Insert the title raw. Do NOT escape `<` or `>` here** — gantt renders section labels as plain
+  SVG text, which escapes them for you. Pre-escaping shows the reader a literal `&lt;script&gt;`.
+  **This is the exact opposite of Diagram 2's rule**, and the two are easy to "harmonize" wrongly.
+- Threads the join `skipped[]`, or that came back `no_planned_dates` / `no_actuals`, are **omitted
+  from the chart and named in a caption underneath with the count and the reason**. A chart that
+  quietly drops half the threads reads as a complete picture of all of them.
+
+````
+```mermaid
+gantt
+    title Planned vs. actual — Start date/Target date against branch_created/done
+    dateFormat YYYY-MM-DD
+    axisFormat %m-%d
+
+    section api#43 refund flow
+    planned          :p_api43, 2026-07-20, 2026-07-28
+    actual           :active, crit, a_api43, 2026-07-25, 2026-07-29
+
+    section web#22 payment UI (never started)
+    planned          :p_web22, 2026-07-18, 2026-07-24
+```
+````
+
+*Charted: 2 of 5 threads. Omitted: 3 with no planned dates (api#51, api#52, web#9).*
+
+#### Diagram 2 — declared vs. encountered dependencies *(from Brief 4)*
+
+`views/dependencies.md` is built from the **encountered** side alone, by design. This is the only
+place both sides appear on one graph, and the only place they can be seen disagreeing.
+
+- Group nodes into a `subgraph` per repo; node ids are repo shortname plus number (`api41`).
+- Node labels: `#N title`, live, and **always double-quoted** — `api41["#41 checkout endpoint"]`.
+  This is not style. An unquoted label containing parentheses or brackets is a **parse error**, and
+  issue titles carry them routinely (`payment UI (v2)`), so the quotes are what stop one ordinary
+  title from taking the whole graph down.
+- **Quoting is not enough. Escape `<` as `&lt;` and `>` as `&gt;` in the title.** Flowchart labels
+  are rendered as **HTML**, so a tag-like run is *silently deleted*: `"#41 Fix <script> handling"`
+  renders as **`#41 Fix handling`**. It parses cleanly and nothing warns you — the reader sees a
+  shorter title and cannot tell anything is missing. Titles carry `<T>`, `<script>`, and `<div>`
+  often enough that this is a live hazard, not a hypothetical. **Do not apply this escaping to the
+  gantt's section labels**, where it would show as literal entity text.
+- **Direction is blocker → blocked**, the same convention `views/dependencies.md` uses: for a thread
+  `T` blocked by `B`, the edge runs `B --> T` and is labelled `|blocks|`. Reversing it inverts every
+  reading of the graph and looks completely normal.
+- **Edge shape carries the join, and there are exactly three:**
+
+| Shape | Meaning |
+|---|---|
+| `-->` | Declared **and** encountered — the two sources agree |
+| `==>` | Encountered but never declared — a session hit it, nothing on either issue says so |
+| `-.->` | Declared but never encountered — recorded on the issue, no session ever ran into it |
+
+- Put the legend in prose under the block. Do not build it as a subgraph of fake nodes — a legend
+  node is indistinguishable from a real issue at a glance.
+- **Never draw an inferred edge.** Not from a shared label, a shared milestone, a similar title, or
+  two issues touching the same file — and **never from a search candidate**, which belongs to
+  start-work at creation and is neither of this join's two sides.
+- Nodes with no edges are omitted.
+- **With no edges in either direction, write one line saying no dependencies were declared or
+  encountered — not an empty mermaid block**, which reads as a rendering failure.
+
+````
+```mermaid
+graph LR
+    subgraph api["msa1624/api"]
+        api41["#41 checkout endpoint"]
+        api43["#43 refund flow"]
+    end
+    subgraph web["msa1624/web"]
+        web22["#22 payment UI"]
+    end
+    subgraph platform["msa1624/platform"]
+        platform12["#12 rate limiter"]
+    end
+
+    api43 ==>|blocks| web22
+    platform12 -.->|blocks| api41
+```
+````
+
+*Solid: declared and encountered. Thick: encountered, never declared. Dotted: declared, never
+encountered.*
+
+### No third diagram
+
+Two things are deliberately not drawn, and both are tempting:
+
+- **Nothing that restates a table.** A track-to-repo graph is the `repos_spanned[]` column with more
+  ink. If a table already carries it, the diagram earns nothing.
+- **Nothing that charts people.** No contributor graph, no commit-volume bars, no per-person
+  timeline. Principle 4 holds harder in a diagram than in prose: a chart of people invites
+  comparison by its shape alone, whatever the caption says, and "Who Did What" is a contribution
+  record precisely so there is no ordering to read as a ranking.
+
 ## Output Format
 
 The field columns below are **this org's discovered fields at the time of writing**, not a fixed
 schema. Build the columns from what the org's `issue-fields` discovery returned this run.
 
+### The document — `<base>/.claude/snapshots/msa1624-2026-07-25-1442.md`
+
 ```
-## Snapshot — {window description} (as of 2026-07-25)
+<!-- Generated by /snapshot at 2026-07-25T14:42:11Z. Point-in-time output, not a record.
+     Nothing reads this back. Safe to delete. -->
+
+# Snapshot — {window description} (as of 2026-07-25)
 Org: msa1624 | In scope: 2 repos (api, web) — workspace ~/work | Timeline: 3 developers, 2 tracks
+Window: 2026-07-18 → 2026-07-25 | Comparison run: all four joins except sizing-vs-actual
 
 ### msa1624/api
 Shipped: 2 merged PRs, 1 closed issue | In progress: 3 | Backlog untouched: 11
@@ -699,6 +1065,9 @@ Shipped: 0 | In progress: 1 | Backlog untouched: 4
 Bot activity excluded: 7 dependabot PRs.
 
 ### Planned vs. Actual
+
+<mermaid gantt — Diagram 1, then the caption naming what was omitted>
+
 - [Refund flow](https://github.com/msa1624/api/issues/43) — planned 2026-07-20 → 2026-07-28,
   actually started 2026-07-25. Five days late starting; target unchanged.
 - [Payment UI](https://github.com/msa1624/web/issues/22) — planned to start 2026-07-18,
@@ -711,6 +1080,9 @@ planned-vs-recorded comparison.)*
   8 days and still open. Worth a second look at the sizing.
 
 ### Dependencies — declared vs. encountered
+
+<mermaid graph LR — Diagram 2, then the one-line prose legend>
+
 **Hit but never declared:**
 - [Payment UI](https://github.com/msa1624/web/issues/22) was blocked by
   [Refund flow](https://github.com/msa1624/api/issues/43) on 2026-07-25 — no relationship recorded
@@ -734,6 +1106,39 @@ planned-vs-recorded comparison.)*
 - Possible duplicate identities (@ali and ali-work — confirm?)
 ```
 
+### The chat summary
+
+Short, and it always carries three things: **the permalink**, **the comparison actually run**, and
+**what is worth acting on**. Everything else is in the file.
+
+**The permalink leads**, because it is the copy that renders and the copy anyone else can open. The
+local path follows it as a one-liner.
+
+```
+Snapshot published → https://github.com/msa1624/tracking/blob/a3f9c21e4b8/reports/2026-07/2026-07-25-1442.md
+Local copy → .claude/snapshots/msa1624-2026-07-25-1442.md
+
+Org: msa1624 | In scope: 2 repos (api, web) | Window: past week
+Shipped 2 PRs and 1 issue; 4 in progress; 15 backlog untouched.
+
+Ran: repo detail, org rollup, who-did-what, planned-vs-actual, declared-vs-encountered.
+NOT run: sizing-vs-actual — no Effort value on 3 of 5 threads.
+Not covered: msa1624/platform (no read access).
+
+Worth a look:
+- web#22 was planned to start 2026-07-18 and has no branch_created yet
+- api#52's closing keyword never linked — api#41 will not close on merge
+- api#43 sits in Backlog but branch_created fired 2026-07-14
+
+Full report, both diagrams, and the per-repo tables are in the file.
+```
+
+**The summary is a pointer, not a second report.** Do not reproduce the tables, do not paste the
+mermaid source — it renders as noise in a terminal, which is the reason the diagrams live in a file
+at all. **But never compress away `not_covered[]` or a not-run join**: those are precisely the lines
+someone skimming the summary must not miss, and a summary that reads clean while the file admits a
+gap is worse than either alone.
+
 ## Red Flags — STOP
 
 - Firing on "where do things stand" — that's a question, not a `/snapshot` invocation
@@ -741,7 +1146,25 @@ planned-vs-recorded comparison.)*
 - Offering "since last check" without having read the cursor
 - Filling in a `last_checked` you didn't read
 - Reading the window from `<org>.status.json`
-- Appending a timeline event, committing to the tracking repo, or touching an issue
+- Appending a timeline event, or touching an issue
+- Committing **anything but one new file under `reports/`** — a `views/` regeneration, a `tracks.yml`
+  edit, a `timeline/` append, or a rebase leftover that happened to be sitting in the clone
+- Skipping the `git status --porcelain` check before committing, and so authoring a change that some
+  other process left staged
+- Writing the report document anywhere but the two paths — into `views/`, into a product repo, or
+  into the org record's directory
+- Amending, regenerating, or force-pushing a published report. It is written once; a wrong one is
+  superseded by the next run, never corrected in place
+- Regenerating the report after a rejected push instead of rebasing and retrying — the second
+  report would describe a different moment under the same filename
+- Writing the exclusion into `.gitignore` instead of `.git/info/exclude`, or writing the first
+  document before the exclusion line exists
+- Overwriting an earlier document rather than writing a new one for this run
+- Reading a previous snapshot document back as a source for anything — nothing parses them, and a
+  stale one describes a stale org
+- Refusing to run, or skipping the report, because there is no write access — the report is worth
+  the same on disk, and only the permalink is lost
+- Asking for a permission grant, or retrying a rejected push in a loop
 - Building planned dates from the timeline, or actual dates from the issue — they come from opposite
   sources, and swapping them makes the whole join meaningless
 - Reporting a `Size` or `Estimate` value in an org that defines neither
@@ -754,6 +1177,28 @@ planned-vs-recorded comparison.)*
 - Rendering any agent payload before it has passed the return gate
 - Dropping `not_covered[]` because the report already looks long
 - Presenting a degraded join as the full analysis, without naming the comparison you ran
+- Drawing a diagram for a join that reported `ran: false` — the most convincing way this skill could
+  lie is a chart standing where a not-run notice belongs
+- Charting a subset of threads with no caption naming how many were omitted and why
+- Leaving a finding **only** in a diagram — a bar, a node, or an edge with no prose beneath it. To a
+  reader whose viewer shows raw mermaid it does not exist, and they cannot tell they missed it
+- Putting a caption or legend *inside* the fence, where it disappears along with the picture
+- Installing, invoking, or checking for a mermaid renderer. The skill writes text; rendering is the
+  reader's surface and none of this skill's business
+- Dropping the prose beneath a diagram because "GitHub renders it anyway" — the local copy, a raw
+  file view, and every failed-push run are all read unrendered
+- Building the permalink off a branch ref instead of the commit SHA
+- Putting a raw `<` or `>` in a **flowchart** node label — the tag-like run is silently deleted and
+  the title renders short with no warning. Escape it. **But never escape the gantt's section
+  labels**, where the entity shows literally. The two diagrams take opposite treatment
+- Relaxing principle 4 — a ranking, a score, a duration, a characterization of someone's week — in
+  an artifact that is now permanent and linkable. It binds harder here, not softer
+- Drawing a dependency edge inferred from a label, a milestone, a title, a shared file, or a search
+  candidate — the graph is held to the same prohibition as the prose
+- Charting people: a contributor graph, commit-volume bars, or a per-person timeline
+- Computing a duration off the gantt, or adding an hours axis
+- Reproducing the whole report in chat instead of summarizing, or dropping `not_covered[]` and
+  not-run joins from the summary because it is meant to be short
 - Substituting a different field when a role has no field, instead of saying the join couldn't run
 - Reading `issue_dependencies_summary` to decide whether something is blocked
 - A dependency bullet whose primary identifier is a number
@@ -807,6 +1252,21 @@ rest mean: you are about to put something in a report that the sources do not su
 | "Is this blocked?" | The dependency list endpoint, never `issue_dependencies_summary` |
 | Per-PR commit authorship | `gh pr view N --json commits` |
 | Commits with no PR | `gh api /repos/{o}/{r}/commits` with `since`/`until` |
+| Where the report goes | Local `<base>/.claude/snapshots/<org>-<stamp>.md`, then `<clone>/reports/YYYY-MM/<stamp>.md`, committed and pushed |
+| Before writing the first document | Ensure `.claude/snapshots/` is in `.git/info/exclude` (layout R) |
+| Can I push? | `gh repo view {org}/tracking --json viewerPermission` at B4, before the research wave |
+| No write access | Run in full, write locally, say it could not be published. **Never refuse to run** |
+| Before the commit | `git status --porcelain` — exactly one added path, or publish nothing |
+| Permalink form | `blob/{full-sha}/reports/{YYYY-MM}/{stamp}.md` — SHA, never a branch |
+| Push rejected | `pull --rebase`, push once more. **Never discard, never regenerate, never force** |
+| A published report is wrong | Superseded by the next run. Never amended, never force-pushed |
+| What goes in chat | Permalink first, then headline counts, comparison run, findings worth acting on, local path — not the tables, not the mermaid |
+| A join reported `ran: false` | No diagram. Print its `phrase` where the block would have gone |
+| Threads omitted from the gantt | Caption underneath with the count and the reason |
+| No dependency edges either direction | One line saying so — never an empty mermaid block |
+| Reader's viewer can't render mermaid | Nothing to do. No dependency, no check — the prose beneath each diagram carries every finding |
+| Title contains `<` or `>` | **Flowchart node label:** escape to `&lt;`/`&gt;` or it is silently deleted. **Gantt section label:** leave raw, or the entity shows literally |
+| Document write fails | Say so, print the full report in chat instead |
 | Item has no assignee | `—`, flagged in Notes |
 | Commit author ≠ committer | Credit the author, plus `Co-authored-by:` names |
 | Bot accounts | Excluded from Who Did What; volume noted separately |
@@ -830,6 +1290,22 @@ rest mean: you are about to put something in a report that the sources do not su
 | "I'll offer the window options first, then read the cursor" | The cursor's contents determine which options are valid. Reading it after means offering a window that may not exist. |
 | "No cursor file, I'll estimate when the last check was" | Never fabricate a timestamp. Say there's no prior check on record. |
 | "The report found a stale issue, I'll just fix it while I'm here" | This skill reports. Surface it and let the user ask for the change. |
+| "Writing a file is authoring — the Iron Law says no" | The law protects what others read as truth: the timeline, issues, boards, `views/`. `reports/` is this skill's own output, written once and read by nobody as a source. |
+| "`views/` may not hold live state, so `reports/` may not either" | The rule was never local-vs-committed — it is **dated-vs-current**. A view is read as "now" and must not cache. A report says "as of 11:42Z" and is an archive. |
+| "The report is wrong — I'll fix it and force-push" | Reports are immutable. Run again; the new one supersedes it. A rewritten permalink is a permalink that lies. |
+| "The push was rejected, so I'll regenerate and try again" | Regenerating queries live state again and produces a *different* report under the same timestamp. Rebase and retry, which is the opposite of the `views/` rule and deliberately so. |
+| "No push access, so `/snapshot` can't run" | It runs in full and writes locally. Only the permalink is lost, and end-work's refuse-without-access rule doesn't transfer: it banks events, this renders a report. |
+| "Nobody else reads the tracking repo, so the per-person layer is fine to loosen" | It is permanent and linkable now. Every guardrail on ranking and characterization binds harder, not softer. |
+| "Same org, same day — I'll overwrite this morning's document" | Two runs are two point-in-time reports, and the second does not supersede the first. New timestamp, new file. |
+| "Last week's snapshot already has the repo detail, I'll read it instead of re-querying" | Then you are reading a week-old cache and calling it live state. Nothing parses these files, including you. |
+| "The sizing join didn't run, but I have the dates — I'll draw the gantt anyway" | A chart standing where a not-run notice belongs is read as the analysis having run. Print the `phrase`. |
+| "Only 2 of 5 threads have planned dates — a 2-bar chart still shows something" | It shows something about 2 threads. Without the caption, it reads as the whole picture of 5. |
+| "These two issues share a milestone, so the edge is obvious" | Inferred edges are prohibited in the prose and equally in the graph. Declared or encountered, nothing else. |
+| "A commit-count chart per person would make the doc more useful" | It would make it a leaderboard with better typography. Principle 4 binds diagrams hardest — a chart of people ranks them by its shape. |
+| "The gantt already shows the late start — repeating it in prose is redundant" | Only if it rendered. In a pager it is a wall of `:a_api43, 2026-07-25`. The prose is the finding; the chart is the shape of it. |
+| "I should check whether their editor renders mermaid before writing the block" | There is nothing to check and no dependency to install. Write the text, guarantee the prose, and let the viewer do what it does. |
+| "The permalink renders, so the prose under each diagram is redundant" | The local copy, a raw file view, and every failed-push run are read unrendered. The prose is the finding; the chart is its shape. |
+| "The user can open the file, so the summary can be one line" | The path alone hides which joins didn't run and which repos weren't covered. Those belong in the summary precisely because they are what a skimmer would otherwise miss. |
 | "The timeline has the target date on it too, I'll read it from there" | It doesn't, by design — that would be a cached copy of live state. Planned comes from the issue, always. |
 | "The base isn't a repo, so there's no Layer 1 to run" | It's a workspace of N repos, and all N are in scope. Layer 1 is close-up on where they opened Claude, whatever shape that is. |
 | "Five repos in scope is a lot of sections — I'll merge them" | Merged, Layer 1 becomes the org rollup with different column headers, and the close-up layer is gone. One section each. |

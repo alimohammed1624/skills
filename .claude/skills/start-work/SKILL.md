@@ -170,8 +170,13 @@ git -C <base> rev-parse --show-toplevel        # is there a repo, and where is i
 .claude/.tracking/
 .claude/*.status.json
 .claude/*.snapshot.json
+.claude/snapshots/
 .claude/tracking-org
 ```
+
+`.claude/snapshots/` holds `/snapshot`'s report documents. This skill never writes one, but the
+exclusion block is shared and is kept identical across all three skills — whichever runs first in a
+repo excludes everything, so no later run leaves a file exposed.
 
 **`.git/info/exclude` rather than `.gitignore` is the whole point.** `.gitignore` is a tracked file;
 writing it would modify the product repo's contents, show up in the developer's diff, and land in
@@ -253,11 +258,14 @@ tracks: []
 ```
 
 `README.md` explains the format to anyone opening the repo cold: what `tracks.yml`,
-`status-policy.yml`, `timeline/`, and `views/` are — noting that `status-policy.yml` does not exist
+`status-policy.yml`, `timeline/`, `views/`, and `reports/` are — noting that `status-policy.yml` does
+not exist
 until the first board transition needs it, so its absence is normal in a fresh repo rather than
 something to fix; that **state lives in GitHub and events live here**; that `tracks.yml` holds four fields
 and becomes a second issue tracker if it grows more; that the timeline is append-only, one branch,
-`merge=union` on `*.jsonl` only; that `views/` is generated and hand edits are overwritten; and that
+`merge=union` on `*.jsonl` only; that `views/` is generated and hand edits are overwritten; that
+`reports/` holds `/snapshot`'s dated reports, each written once and never rewritten, which is why
+they may carry live issue state that `views/` may not; and that
 there are no durations, no rankings, and no pruning.
 
 **B3. Pull, every run.**
@@ -276,11 +284,16 @@ developer without push rights still gets a full briefing.
 
 ```
 {org}/tracking
-├── README.md          ├── tracks.yml          └── views/          (generated)
-├── .gitattributes     ├── status-policy.yml       gantt.md
-                       └── timeline/               dependencies.md
-                           YYYY-MM/<dev>.jsonl
+├── README.md          ├── tracks.yml          ├── views/          (generated, means "now")
+├── .gitattributes     ├── status-policy.yml   │   gantt.md
+                       └── timeline/           │   dependencies.md
+                           YYYY-MM/<dev>.jsonl └── reports/        (/snapshot, means "then")
+                                                   YYYY-MM/YYYY-MM-DD-HHMM.md
 ```
+
+**`reports/` belongs to `/snapshot` alone** — this skill never writes, reads, or regenerates one.
+Each report is written once and never rewritten, which is what lets it carry live issue state that
+`views/` may not: a view is read as *now*, a report is stamped with *then*.
 
 **One branch, always** — never branched, force-pushed, squashed, or rebased. That linearity is what
 lets principle 3 hold. One clone and one `status.json` serve every worktree on the machine.
