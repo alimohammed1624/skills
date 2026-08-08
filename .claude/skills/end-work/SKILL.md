@@ -306,7 +306,7 @@ call, not the definition.**
 **`Size` and `Estimate` are not defined in this org. Do not invent them.** If a role has no field,
 **say so** — never approximate it with a neighbouring field that happens to accept a write.
 
-**Relationships** is the dependencies API, writable at rung 2 (`gh issue edit --add-blocked-by`, URL
+**Relationships** is the dependencies API, writable at rung 1 (`gh issue edit --add-blocked-by`, URL
 form for cross-repo). **A dependency research *found* is not one a session *hit*:** discovered
 blockers go on the issue only; `blocked_by` events record what a session actually ran into.
 
