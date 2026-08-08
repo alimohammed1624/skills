@@ -123,11 +123,21 @@ joins run as **four parallel read-only agents**, off one field discovery the ski
 down. Attribution comes strictly from author/assignee/reviewer fields and the timeline's `dev`, bots
 excluded, and it must never rank or editorialize about anyone's output.
 
-**It does publish, and that is the one thing it writes.** The full report goes to a local gitignored
-copy *and* to `reports/YYYY-MM/<stamp>.md` in the tracking repo, committed and pushed on every run —
-one new file, never an edit. Chat gets a **SHA-pinned permalink** first, then a summary. The
-permalink is the point: GitHub renders mermaid, so the report is readable by anyone with repo access
-and no local tooling.
+**It does publish, and that is the one thing it writes.** Every run produces **two documents from one
+pass** — the technical report and a **business report** for non-technical stakeholders — each written
+to a local gitignored copy *and* to `reports/YYYY-MM/<stamp>{,-business}.md` in the tracking repo,
+committed together in **one commit** and pushed on every run. Two new files, never an edit. Chat gets
+**both SHA-pinned permalinks** first, the business one labelled as the copy to forward, then a
+summary. The permalink is the point: GitHub renders mermaid, so the report is readable by anyone with
+repo access and no local tooling.
+
+The business report is rendered from the same computed layers and joins, so the two can never
+disagree. Its interpretation layer is **Brief 5**, dispatched alone after the joins have run and fed
+the finished pass — it makes no GitHub call at all. It carries four sections (where things stand,
+what landed, needs a decision, what this doesn't cover), reuses the planned-vs-actual gantt unchanged,
+and refuses two things the technical report does not have to refuse: **any per-person content**, and
+**any invented certainty** — no percent-complete, no forecast date that isn't a Target date on the
+issue, no confidence score. Every verdict names the observation behind it.
 
 It carries the two diagrams `views/` deliberately cannot — a **planned-vs-actual gantt**
 (`views/gantt.md` charts actuals only) and a **declared-vs-encountered dependency graph**
@@ -154,6 +164,16 @@ reverse; that no agent runs its own field discovery; that agent prose never reac
 that a partially-covered join prints its `not_covered` rather than reading as complete; that a
 not-run join prints a reason instead of vanishing; that a repo with no timeline events is called
 untracked rather than inactive.
+
+**What to probe — the business report:** that Brief 5 is dispatched *after* the joins and not with the
+wave; that a payload with a non-empty `surface_log` is discarded even when every call was a read;
+that a verdict with no `observation`, or one that restates itself, fails the payload; that a
+discarded payload publishes the technical report **alone** and the skill does not compose the business
+document itself; that the porcelain gate rejects a third staged path *and* accepts one path on a run
+that discarded Brief 5; that both permalinks pin to the same SHA; that no per-person line, count, or
+percentage survives into the business document; that a `ran: false` planned-vs-actual join removes the
+gantt from **both** documents rather than leaving one; and that the not-covered section is present
+even when it makes the report read worse.
 
 ### gh-wrapper
 
@@ -188,7 +208,7 @@ never has to open the project board.
 |---|---|
 | start-work | session brief (what moved, **what's awaiting you**) · dependencies · field proposals |
 | end-work | compliance · session brief · dependencies (compare) |
-| `/snapshot` | repo+org rollup · who-did-what · planned/sizing joins · dependencies (compare) |
+| `/snapshot` | repo+org rollup · who-did-what · planned/sizing joins · dependencies (compare) — then **business framing** (Brief 5, after the joins, no GitHub access) |
 
 Each skill states the **shared preamble** once — the read-only rule, the two-rung ladder, the
 GitHub traps, the return envelope — then a short brief per agent. `gh-wrapper` carries the portable
@@ -224,7 +244,7 @@ in, absolute:
 | `<base>/.claude/.tracking/<org>/` | all three | clone of the org tracking repo |
 | `<base>/.claude/<org>.status.json` | start-work / end-work | `last_session` + the live `session` and its threads |
 | `<base>/.claude/<org>.snapshot.json` | `/snapshot` | one `last_checked` timestamp |
-| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | `/snapshot` | local copy of each run's report — derived, point-in-time, never read back. The published copy goes to `reports/` in the tracking repo |
+| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM{,-business}.md` | `/snapshot` | local copies of each run's two reports — derived, point-in-time, never read back. The published copies go to `reports/` in the tracking repo |
 | `<base>/.claude/tracking-org` | all three | the org login, recorded once when nothing else answers |
 
 The two cursor files share **zero fields**, and neither skill opens the other's. Both live outside
