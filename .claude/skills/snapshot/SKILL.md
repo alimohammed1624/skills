@@ -807,13 +807,16 @@ written, and the chat says so with the reason.
 In this order, and the order is the failure design:
 
 1. **Ensure `.claude/snapshots/` is excluded** (layout R) and the directory exists.
-2. **Write the document locally** — the full report, every layer, every join, both diagrams.
-3. **Publish it** — copy into `<clone>/reports/YYYY-MM/`, verify exactly one path is staged, commit,
-   push, and capture the SHA. Skip if B4 found no write access or the tracking repo does not exist.
-   On rejection: `pull --rebase`, push once more, then give up gracefully. See *Publishing*.
-4. **Print the chat summary** — the permalink first, then headline counts, the "which comparison I
-   ran" line, the findings worth acting on, and the local path. Not the whole report.
-5. **Overwrite `last_checked`** with this run's timestamp — the same one in both filenames.
+2. **Write the technical document locally** — every layer, every join, both diagrams.
+3. **Write the business document locally** — same stamp, `-business.md`. Skip only if Brief 5's
+   payload was discarded; the run continues either way.
+4. **Publish** — copy both into `<clone>/reports/YYYY-MM/`, verify **exactly the expected paths are
+   staged**, commit once, push, and capture the SHA. Skip if B4 found no write access or the tracking
+   repo does not exist. On rejection: `pull --rebase`, push once more, then give up gracefully. See
+   *Publishing*.
+5. **Print the chat summary** — both permalinks first, then headline counts, the "which comparison I
+   ran" line, the findings worth acting on, and the local paths. Not the whole report.
+6. **Overwrite `last_checked`** with this run's timestamp — the same one in every filename.
 
 **Every failure degrades one step and stops:**
 
@@ -822,6 +825,8 @@ In this order, and the order is the failure design:
 | The push | Local copy stands. Summary says it is unpublished, and why. Cursor still written |
 | No write access, or no tracking repo | Same, minus the attempt. Never a reason to skip the report |
 | The local write | Say so and **print the full report in chat**. A failed write must never silently downgrade the run to a summary of a report nobody can read |
+| Brief 5, or its return gate | The technical report is written and published exactly as normal. **No business document is written, and none is composed by hand.** The chat names the reason. Everything else about the run is unaffected |
+| The business document's local write | Say so. The technical report still publishes; publish nothing under `-business.md` that was never written locally |
 
 The cursor is written last and is written **whatever happened above** — the run occurred, and the
 next "since last check" window must start from it.
@@ -950,24 +955,34 @@ After the local write, and only if the write-access preflight (B4) said yes:
 
 ```bash
 mkdir -p <clone>/reports/YYYY-MM
-# copy the document in, byte-identical to the local one
-git -C <clone> add reports/YYYY-MM/YYYY-MM-DD-HHMM.md
-git -C <clone> status --porcelain          # MUST show exactly one added path
+# copy both documents in, byte-identical to the local ones
+git -C <clone> add reports/YYYY-MM/YYYY-MM-DD-HHMM.md reports/YYYY-MM/YYYY-MM-DD-HHMM-business.md
+git -C <clone> status --porcelain          # MUST show exactly these paths, added, and nothing else
 git -C <clone> commit -m "snapshot: {window description} ({YYYY-MM-DD HHMM}Z)"
 git -C <clone> push
-git -C <clone> rev-parse HEAD              # the SHA the permalink pins to
+git -C <clone> rev-parse HEAD              # the SHA both permalinks pin to
 ```
 
-**Check `status --porcelain` before committing, every time.** One added path is the only acceptable
-result. Anything else — a modified `views/` file, a stray `tracks.yml` edit, a rebase leftover — means
-something else touched the clone, and committing it would make `/snapshot` the author of a change it
-never intended. Stop, report what was staged, and publish nothing.
+**Check `status --porcelain` before committing, every time.** The only acceptable result is **added
+paths, all under `reports/YYYY-MM/`, all carrying this run's stamp, and no others** — two of them
+normally, one when Brief 5's payload was discarded and no business document exists. Anything else — a
+modified `views/` file, a stray `tracks.yml` edit, a rebase leftover, a report from another run —
+means something else touched the clone, and committing it would make `/snapshot` the author of a
+change it never intended. Stop, report what was staged, and publish nothing.
 
-**Build the permalink from the SHA, never from the branch:**
+**Count the paths against what you wrote, not against the number two.** A run that discarded Brief 5
+stages one file legitimately; a run that stages two when only one was written is staging something
+that is not this run's output.
+
+**Build both permalinks from the same SHA, never from the branch:**
 
 ```
 https://github.com/{org}/tracking/blob/{full-sha}/reports/{YYYY-MM}/{YYYY-MM-DD-HHMM}.md
+https://github.com/{org}/tracking/blob/{full-sha}/reports/{YYYY-MM}/{YYYY-MM-DD-HHMM}-business.md
 ```
+
+One commit, one SHA, two links. Two SHAs would mean two commits, which would mean the documents
+describe the same moment but landed as separate events in the repo's history.
 
 **On a rejected push — rebase and retry. Never discard, never regenerate.** Report filenames are
 unique per run, so there is no content conflict to resolve: `git -C <clone> pull --rebase` then push
