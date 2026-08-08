@@ -1367,6 +1367,20 @@ gap is worse than either alone.
   into the org record's directory
 - Amending, regenerating, or force-pushing a published report. It is written once; a wrong one is
   superseded by the next run, never corrected in place
+- Writing a percent-complete, a forecast date not taken from a Target date field, or a confidence
+  score into the business report
+- A verdict whose observation restates the verdict instead of citing something outside it
+- A per-person section, contribution list, or count of any kind in the business report
+- Letting Brief 5 reach GitHub, or accepting a payload whose `surface_log` is non-empty
+- Dispatching Brief 5 with the Step 1.5 wave, before the joins it reads have run
+- Pasting Brief 5's prose into the document instead of re-rendering its rows
+- **Composing the business document by hand after Brief 5's payload was discarded** — the
+  interpretation would then have no check on it at all, which is the one thing the gate exists for
+- Committing a path that is not one of this run's report documents, or a second document that was
+  never written locally
+- Publishing the business report while the technical one failed to be written, or the reverse
+- Drawing the gantt in the business report when the join reported `ran: false`
+- Amending or regenerating a published business report — written once, like every other report
 - Regenerating the report after a rejected push instead of rebasing and retrying — the second
   report would describe a different moment under the same filename
 - Writing the exclusion into `.gitignore` instead of `.git/info/exclude`, or writing the first
@@ -1455,7 +1469,7 @@ rest mean: you are about to put something in a report that the sources do not su
 | Which boards exist | `organization(login:){projectsV2}` **once**, in Step 1, passed down |
 | A card's `Status` disagrees with the timeline | A Notes line, citing both. Read `status-policy.yml` to know the intended mapping; never write it, never move the card |
 | Issue is on no board | Notes line. Report it; never add it. |
-| Research | Four agents, one message, in parallel — then the return gate before rendering |
+| Research | Four agents, one message, in parallel — then the return gate before rendering. Brief 5 runs alone, after the joins, at Step 5.5 |
 | An agent failed | Retry once narrowed, then run that layer's inline procedure and say it ran degraded |
 | No tracking repo for the org | Report it, name start-work, run the GitHub-only layers. Never offer to create it. |
 | Planned dates | Live from the planned-start / planned-finish fields on the issue |
@@ -1464,16 +1478,18 @@ rest mean: you are about to put something in a report that the sources do not su
 | "Is this blocked?" | The dependency list endpoint, never `issue_dependencies_summary` |
 | Per-PR commit authorship | `gh pr view N --json commits` |
 | Commits with no PR | `gh api /repos/{o}/{r}/commits` with `since`/`until` |
-| Where the report goes | Local `<base>/.claude/snapshots/<org>-<stamp>.md`, then `<clone>/reports/YYYY-MM/<stamp>.md`, committed and pushed |
+| Where the reports go | Local `<base>/.claude/snapshots/<org>-<stamp>{,-business}.md`, then `<clone>/reports/YYYY-MM/<stamp>{,-business}.md`, both in one commit |
 | Before writing the first document | Ensure `.claude/snapshots/` is in `.git/info/exclude` (layout R) |
 | Can I push? | `gh repo view {org}/tracking --json viewerPermission` at B4, before the research wave |
 | No write access | Run in full, write locally, say it could not be published. **Never refuse to run** |
-| Before the commit | `git status --porcelain` — exactly one added path, or publish nothing |
-| Permalink form | `blob/{full-sha}/reports/{YYYY-MM}/{stamp}.md` — SHA, never a branch |
+| Before the commit | `git status --porcelain` — added paths under `reports/YYYY-MM/` with this run's stamp and nothing else. Count them against what you wrote, not against two |
+| Permalink form | `blob/{full-sha}/reports/{YYYY-MM}/{stamp}{,-business}.md` — one SHA, two links, never a branch |
 | Push rejected | `pull --rebase`, push once more. **Never discard, never regenerate, never force** |
 | A published report is wrong | Superseded by the next run. Never amended, never force-pushed |
 | What goes in chat | Permalink first, then headline counts, comparison run, findings worth acting on, local path — not the tables, not the mermaid |
 | A join reported `ran: false` | No diagram. Print its `phrase` where the block would have gone |
+| Brief 5's payload fails its gate | Publish the technical report alone. Never retry, never compose the business document yourself. Say why in chat |
+| A stakeholder asks "how far along is it?" | A verdict and the observation behind it. Never a percentage — there is no field that carries one |
 | Threads omitted from the gantt | Caption underneath with the count and the reason |
 | No dependency edges either direction | One line saying so — never an empty mermaid block |
 | Reader's viewer can't render mermaid | Nothing to do. No dependency, no check — the prose beneath each diagram carries every finding |
@@ -1527,6 +1543,14 @@ rest mean: you are about to put something in a report that the sources do not su
 | "Counting commits per dev is just data, the PM can interpret it" | A ranked list gets acted on as a performance signal. Report what each person worked on. |
 | "@ali and ali-work are obviously the same person, I'll combine them" | Probably — but say so as a question. Silently merging identities puts words in someone's mouth. |
 | "repo-legacy has no events, so it's been quiet" | It has no events because nobody ran these skills there. Untracked ≠ inactive. |
+| "Brief 5's payload was rejected, but I know what it was going to say" | Then the interpretation has no check on it, which is the entire purpose of the gate. Publish the technical report and say the business one didn't run. |
+| "Brief 5 needs one number it wasn't given — one read won't hurt" | It reads GitHub at a different instant than the joins did, and the two documents can then disagree with nothing able to detect it. If it wasn't supplied, it goes in `not_covered`. |
+| "The stakeholder will ask 'how far along' — I'll estimate a percentage" | There is no field that carries one, so it would be invented, and it will be quoted back as though it were measured. A verdict with its observation answers the question honestly. |
+| "'On track' is obvious from the dates — the observation is redundant" | The observation is what makes it checkable. Without it a verdict is an opinion typeset as a finding, and this reader has no way to check it. |
+| "A per-person section would help the business side plan" | It is a leaderboard with a business justification. Owners on tracks and decisions carry the routing information; the rest is comparison. |
+| "The business report is the friendly one — the not-covered list will sour it" | This reader is the one who cannot tell a thin report from a complete one. Dropping the gap makes the document confident and wrong. |
+| "Both documents say the same things — I'll just publish the business one" | The technical report is the one with the joins, the tables, and the diagrams. The business report is a reading of it, not a replacement for it. |
+| "It's one commit either way — I'll push the business report separately" | Two commits mean two SHAs, and the two documents describe one moment. One commit, one SHA, two permalinks. |
 
 ## The Bottom Line
 
