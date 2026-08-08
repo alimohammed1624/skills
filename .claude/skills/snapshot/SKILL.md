@@ -406,7 +406,9 @@ itself not-run.
 
 **Spawn four `Explore` subagents in one message, in parallel.** All read-only; all receive the single
 field discovery above, plus whatever local reads they need — they must not open the tracking clone
-themselves.
+themselves. **A fifth agent runs later, after the joins are complete — see *Step 5.5*. It is not part
+of this wave and must never be dispatched here**: its entire input is the output of Steps 2–5, so a
+Brief 5 launched in parallel would have nothing to read and would go to GitHub to find it.
 
 #### Shared preamble — goes in every brief
 
@@ -717,6 +719,88 @@ Trap.
 
 One `git pull` plus local file reads covers every developer, track, and repo. Say what the timeline
 covers: a repo with no timeline events isn't inactive, it's untracked, and those are different.
+
+### Step 5.5: Brief 5 — the Business Framing
+
+*(The business report's interpretation layer. One agent, dispatched alone, after every join above has
+returned and passed its gate.)*
+
+**It works from the computed pass and never from GitHub.** Its brief carries the finished layers,
+joins, threads, and verdicts. It performs no `gh` call, no field discovery, and no lookup of any
+kind. That is what makes the two documents incapable of disagreeing: they describe one moment,
+computed once. An agent that fetched its own numbers would read GitHub at a different instant, and
+the business report could then state a figure the technical report contradicts — with nothing in the
+run able to detect it.
+
+**Give it the shared preamble** from Step 1.5, unchanged, plus the brief below.
+
+> **INPUT you supply:** `tracks[]` with each track's parent, owner, and live dates;
+> `join_planned_vs_actual{rows[], skipped[], ran}`; `join_sizing_vs_actual{ran, phrase}`;
+> Brief 4's `diff{hit_not_declared[], declared_not_hit[]}` and `still_blocked[]`;
+> Brief 1's `repo_detail[]` rows and `track_rollup[]`; the window; and the union of every brief's
+> `covered[]` / `not_covered[]`.
+>
+> **You make no GitHub call of any kind.** Not a read, not a search, not a `gh api graphql` query.
+> Everything you need is above. If something appears to be missing, it is missing from the run — say
+> so in `not_covered[]` and return. `surface_log` should come back empty, and an empty one is the
+> expected result rather than a sign you did too little.
+>
+> Your job is interpretation, not retrieval: group threads into **themes** a non-engineer would
+> recognize, call each track's **verdict**, and name the items that **need a decision** from someone
+> outside the team.
+>
+> **`data`:**
+>
+> ```json
+> { "themes":    [{"headline": "...", "items": ["msa1624/api#43"], "evidence": "..."}],
+>   "verdicts":  [{"track": "payments-v2", "verdict": "at_risk", "owner": "@nilendu",
+>                  "observation": "planned 2026-07-18, no branch_created"}],
+>   "decisions": [{"item": "msa1624/web#22", "why": "...", "who": "@priya|null"}],
+>   "not_covered": [] }
+> ```
+>
+> `verdict` is the closed enum `on_track` · `at_risk` · `blocked` · `not_started`. **Every verdict
+> carries an `observation` that cites something outside itself** — a planned date against a missing
+> `branch_created`, a `still_blocked` entry, an absent assignee. "At risk because it is risky"
+> restates the verdict and is the failure this field exists to prevent.
+>
+> `headline` is a plain-language noun phrase a non-engineer would recognize — "refund handling now
+> works end to end", never "merged #47 into the charge path". `evidence` names which supplied row it
+> came from. `items[]` are `owner/repo#N` refs **taken from your input**; you cannot introduce one.
+>
+> `decisions[]` holds only what someone outside the team must act on: blocked on an external party,
+> planned and never started, slipped past its Target date, or open with no owner. `who: null` means
+> unowned, which is itself the decision — never guess a name to fill it.
+>
+> **No numbers you were not given.** No percent-complete, no forecast date unless that exact date
+> was supplied as a Target date, no confidence score, no duration, no count you computed yourself.
+>
+> **Write about work, never about people.** An owner is a routing label attached to a track or a
+> decision. There is no per-person section here, no contribution list, and no count of anyone's
+> output — that layer exists in the technical report and does not cross over.
+
+#### The return gate — Brief 5
+
+The Step 1.5 gate applies in full. These are additional, and each **discards the whole payload**:
+
+| Gate | Why |
+|---|---|
+| `surface_log` is non-empty — **any** call, read-class included | This agent had no reason to reach GitHub at all. A read here means it went looking for numbers instead of using the ones it was given, and the two documents can now disagree |
+| Any `owner/repo#N` in `themes[].items`, `verdicts[].track`, or `decisions[].item` that was not in the brief | It came from somewhere, and the only somewhere available is invention |
+| A `verdict` outside the four-value enum, or a verdict with a missing or empty `observation` | An unsourced verdict is the business-report form of a guessed field value |
+| An `observation` that restates its verdict without citing a supplied row | The rationale was composed after the value was chosen — the exact failure *Established vs. guessed* exists to catch |
+| Any percentage, duration, ranking, score, or a number absent from the input | Invented certainty. A stakeholder cannot tell a computed figure from a plausible one |
+| Any per-person key, contribution list, or count of a person's output | Principle 4, in the artifact most likely to be read as a performance signal |
+
+**On a discarded payload: do not retry, and do not write the business report yourself.**
+
+This is a **deliberate exception** to the rule at the end of Step 1.5, where a failed brief is
+retried once and then run inline as a fallback. It does not apply here, and the reason is specific:
+Steps 2–5 are both specification and fallback because their output is *rows* — you can produce the
+same rows yourself and the reader cannot tell the difference, because there is none. Brief 5's
+output is *interpretation*, and a skill that composes the interpretation after rejecting the agent's
+has removed the only check on it. The technical report publishes as normal, no business document is
+written, and the chat says so with the reason.
 
 ### Step 6: Write, Publish, Summarize, Then Write the Cursor
 
