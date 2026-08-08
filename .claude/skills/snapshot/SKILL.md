@@ -11,10 +11,12 @@ A three-layer, org-scoped, per-developer report: **detail on the repos in scope*
 rollup**, and **who did what**. Each layer joins live GitHub state against timeline history — computed at
 report time and cached nowhere.
 
-**It delivers in three places.** The full report — three layers, four joins, and the two mermaid
-diagrams — is written locally under `<base>/.claude/snapshots/`, then **committed and pushed to
-`reports/` in the tracking repo**, where GitHub renders the mermaid. The chat gets a brief summary,
-the local path, and a **permalink pinned to the commit SHA**. See *The Report Document*.
+**Every run produces two documents from one pass.** The **technical report** — three layers, four
+joins, the two mermaid diagrams — and a **business report** written for non-technical stakeholders,
+rendered from the same computed layers and joins so the two can never disagree. Both are written
+locally under `<base>/.claude/snapshots/`, then **committed and pushed together to `reports/` in the
+tracking repo in one commit**, where GitHub renders the mermaid. The chat gets a brief summary, both
+local paths, and **two permalinks pinned to the commit SHA**. See *The Report Document*.
 
 **This skill publishes.** It is the one part of `/snapshot` that writes something other people can
 see, and it does so on every run without asking — that is the configured behaviour, not an oversight.
@@ -65,7 +67,7 @@ scoped to open work rather than to a window.
 |---|---|
 | No timeline events | Its own `<base>/.claude/<org>.snapshot.json` cursor |
 | No `views/` regeneration, and no edit to any existing file in the tracking repo | Its own report document under `<base>/.claude/snapshots/` |
-| No issue comments, field writes, closures, or labels | Its own **new** file under `reports/` in the tracking repo, committed and pushed |
+| No issue comments, field writes, closures, or labels | Its own **two new** files under `reports/` in the tracking repo — the technical report and the business report — committed and pushed in one commit |
 | No board membership adds and no `Status` moves — a stale card is reported, never corrected | |
 
 **`reports/` and `views/` live in the same repo under opposite rules, and confusing them is the
@@ -173,17 +175,21 @@ thing. If the clone had to be created this run, say so rather than reporting a q
 Writing `tracking-org` is the **one** exception to the write-surface table below: it is local
 configuration, not record content, and without it a base with no remote can never run this skill.
 
-### Write surfaces — these three, and nowhere else
+### Write surfaces — these four, and nowhere else
 
 | Location | Writes permitted |
 |---|---|
 | `<base>/.claude/<org>.snapshot.json` | The `last_checked` timestamp. Nothing else in the file. Local. |
 | `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM.md` | This run's report document. A new file each run; **never an overwrite of an earlier one**. Local and gitignored. |
+| `<base>/.claude/snapshots/<org>-YYYY-MM-DD-HHMM-business.md` | This run's business report. Same stamp as the technical one, same rules: a new file each run, never an overwrite. Local and gitignored. |
 | `<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM.md` | The same report, committed and pushed. **A new file only** — never a modification, rename, or deletion of anything already in the tracking repo, and never a touch to `tracks.yml`, `timeline/`, `status-policy.yml`, or `views/`. |
+| `<clone>/reports/YYYY-MM/YYYY-MM-DD-HHMM-business.md` | The same business report, committed in the **same commit** as the technical one. A new file only, under every rule the row above carries. |
 
 No events, no issue comments, no field writes, no labels, no closures. **The one commit this skill
-ever makes adds exactly one file.** If a `git status` in the clone shows anything else staged, stop
-and say so — a snapshot run that would commit a second path has gone wrong somewhere upstream.
+ever makes adds exactly two files** — the technical report and the business report, both under
+`reports/YYYY-MM/`, both carrying this run's stamp. If a `git status` in the clone shows a third
+path, or a path that is not one of those two, stop and say so: a snapshot run staging anything else
+has gone wrong somewhere upstream.
 
 ### Bootstrap *(snapshot variant — clones, never creates)*
 
