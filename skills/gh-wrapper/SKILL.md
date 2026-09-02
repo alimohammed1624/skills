@@ -1,6 +1,7 @@
 ---
 name: gh-wrapper
-description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, Iteration/sprint, or any board-defined field), when linking issues across repositories, when opening a pull request or linking one to its issue, or when about to report that a GitHub field, board membership, relationship, or PR link cannot be set
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, Iteration/sprint, or any board-defined field), when linking issues across repositories, when opening a pull request or linking one to its issue, when running `gh stack` or creating a PR whose base is another PR's head branch, when about to merge, close, or retarget any PR (it may be a stack layer), or when about to report that a GitHub field, board membership, relationship, PR link, or stack membership cannot be set
+disable-model-invocation: true
 ---
 
 # gh Wrapper: Route to the Right GitHub Surface
@@ -13,6 +14,13 @@ Route by capability, not by habit.
 
 **Core principle:** Prefer the `gh` flag when one exists, but never let a missing
 flag become a missing capability. `gh api graphql` can almost always do it.
+
+**"Almost" has one verified exception: stacked pull requests.** GraphQL exposes
+`PullRequest.stack` and `stackEntry` read-only and defines **no stack mutation**
+(schema introspected 2026-09-02 — zero `Mutation` fields match `stack`). For
+stacks the escape hatch is `gh api` **REST** — `/repos/{o}/{r}/stacks` and
+`/pulls/{n}/merge-async` under `X-GitHub-Api-Version: 2026-03-10`. See *Stacked
+Pull Requests* below.
 
 **Violating the letter of this rule is violating the spirit of this rule.**
 
@@ -84,6 +92,13 @@ the *routing* answer rather than an escalation — one GraphQL query costs 1 poi
 equivalent is 18 requests. Starting there is following the ladder, not skipping it. Say which rung
 you used and why.
 
+**Rung 2 is `gh api`, and for most of this file that means `gh api graphql`.** The REST paths
+named here — `/orgs/<owner>/issue-fields`, `/repos/{o}/{r}/stacks`, `/pulls/{n}/merge-async` —
+are the same rung, the same surface, and carry the same obligation to be walked before anything
+is called unreachable. Stacks are the one feature where GraphQL is read-only and REST is the
+only write path; say which one you used. A `gh` **extension** (`gh stack`) is rung 1 once it is
+installed, and `gh extension list` is how you find out.
+
 **No exceptions:**
 - Not for "the skill used to say there was no fallback"
 - Not for "GraphQL feels like overkill for one field"
@@ -97,6 +112,8 @@ you used and why.
 
 **Owner/repo:** infer from `git config --get remote.origin.url` when `-R` is absent.
 **Identity:** `gh api user --jq .login` when a command needs "me".
+**Stack membership:** before merging, closing, or retargeting any PR, read whether it
+is a stack layer — `gh pr view --json` will not tell you (*Stacked Pull Requests*).
 
 ## Preflight: What Kind of Owner Is This?
 
@@ -687,7 +704,7 @@ Report unset board fields the same way you report unset Issue Fields — by name
 in the same list. A caller who sees "Priority unset" and no mention of `Status`
 will reasonably assume `Status` was handled.
 
-## Linking a PR to Its Issue — Four Mechanisms, One Silent Failure
+## Linking a PR to Its Issue — Five Mechanisms, Two Silent Failures
 
 Opening a PR does not link it to anything. As with an issue and its board, the
 link is a **separate mechanism from the create**, and the one that matters most
@@ -699,10 +716,12 @@ is the one with no visible symptom when it fails.
 | **Plain mention** (`owner/repo#N`, no keyword) | A cross-reference backlink on the issue. **No link, no auto-close** | the body |
 | **Board membership for the PR** | PRs go on Projects v2 boards too, and go missing the same silent way issues do | `gh project item-add --url <pr-url>` |
 | **`Linked pull requests`** board field | Read-only projection **derived from the closing keyword** — writing it is not a thing | — |
+| **Stack membership** | A `PullRequestStack` object on the repo, chaining this PR under the one whose head branch it targets. **Having that base does not put it in the stack** | `gh stack link`, else REST `POST /repos/{o}/{r}/stacks` — see *Stacked Pull Requests* |
 
-**The last two are independent of the first two.** A PR can carry a perfect
-`Closes` keyword and be on no board; it can be on the board and linked to
-nothing. Setting one is never evidence about the other.
+**The last three are independent of the first two, and of each other.** A PR can
+carry a perfect `Closes` keyword and be on no board; it can be on the board and
+linked to nothing; it can target another PR's head branch and be in no stack.
+Setting one is never evidence about another.
 
 ### The Default-Branch Trap
 
@@ -712,12 +731,38 @@ targets the repository's DEFAULT branch.
 
 Not "the link is created but doesn't fire on merge."
 No link is created at all.
+
+One exception, on the CLOSE and not the link: a stack layer's
+keyword still fires when that layer lands in a stack merge. Below.
 ```
 
 This is the failure mode to design around, because nothing about the PR looks
 wrong: the body reads `Closes owner/repo#43`, the text renders, and the sidebar
-is simply empty. A PR based on anything other than the default branch — a stacked
-PR, a release branch, an integration branch — links to nothing.
+is simply empty. A PR based on anything other than the default branch — a release
+branch, an integration branch, every layer of a stack above the bottom one — links
+to nothing.
+
+**Verify the link; never infer it from the body.** `gh pr view N --json
+closingIssuesReferences` is the read path (rung 1; the field is in `gh` 2.99.0's
+list). An empty list under a body that carries the keyword is the trap caught, not
+a rendering delay.
+
+**In a stack the *link* and the *close* come apart, and both were observed live
+(msa1624/stack-lab, 2026-09-02).** Only position 1 targets the trunk, and the
+trunk is the default branch only if nobody passed `--base` to `gh stack init` or
+`gh stack link`. Three facts, each seen once:
+
+| | Observed |
+|---|---|
+| **The link** (sidebar, `closingIssuesReferences`, the board's `Linked pull requests`) | Exists only for a layer whose base is the **default branch** (the trunk was the default branch in the test; a stack rooted elsewhere with `--base` has no link at position 1 either). When a lower merge retargets a layer to the trunk, the link does **not** appear; re-saving the same body does nothing; **editing the body to different text creates it.** |
+| **The close** | A keyword on an upper layer **fires when that layer lands on the trunk in a stack merge** — a layer at position 3, base still another layer's branch, no link anywhere, closed its issue on merge, with the PR recorded as the closer. Inert link, live keyword. |
+| **The timing** | The issue closes when the layer carrying the keyword merges. `Closes` on the bottom layer closes the issue on the first partial merge, however many layers remain. |
+
+So say two separate things about a layer's keyword: whether a link exists *now*
+(read `closingIssuesReferences`; retarget alone never sets it), and when the
+close will fire (when that layer merges). Put the keyword on the layer whose merge
+completes the issue's work, and say plainly that the sidebar link will not exist
+until that layer's base is the default branch *and* its body has been edited since.
 
 **So check the base before trusting the keyword**, and never infer the default
 branch from the name `main`:
@@ -729,7 +774,8 @@ gh repo view <owner>/<repo> --json defaultBranchRef --jq .defaultBranchRef.name
 | Base | Do |
 |---|---|
 | Is the default branch | Closing keyword works. Use it. |
-| Is **not** the default branch | **Say so.** The keyword is inert — keep the plain reference for the backlink, post the issue comment, and report that no linked-issue relationship exists and the issue will not auto-close on merge. |
+| Is **not** the default branch | **Say so.** The keyword is inert — keep the plain reference for the backlink, post the issue comment, and report that no linked-issue relationship exists and the issue will not auto-close on merge — unless the PR is a stack layer; next row. |
+| Is a stack layer | Apply the row above to **this layer's own base** for the *link*. For the *close*, the keyword fires when this layer merges — even with no link — so say which layer carries it and what its merge will close. After a retarget, the link appears only once the body is edited. |
 
 Reporting it is the whole job here. A caller who is told the PR is "linked" when
 the base made that impossible will not check, and the issue silently outlives the
@@ -762,6 +808,10 @@ The closing keyword goes in the **body** — there is no flag or parameter for i
 any rung. Adding the PR to a board is a separate call after creation, same as for
 an issue, and the same idempotency applies.
 
+**A base that is another open PR's head branch makes this a stack layer, and
+creating it does not stack it.** The link is one more call after the create — see
+*Stacked Pull Requests* for the path and the gate.
+
 ### The gate
 
 > **A PR is created with its closing keyword in the body, or the caller is told
@@ -773,10 +823,185 @@ review time. Unlike board membership, it is not a link to be made automatically 
 the back of discovery. Whether to open one is the caller's decision; this skill
 covers only how, and how to link it once the caller has decided.
 
+## Stacked Pull Requests — Membership Is a Mechanism, and GraphQL Cannot Write It
+
+*Verified live 2026-09-02 on `msa1624/stack-lab` (an org test repo: three stacks,
+nine PRs) with `gh` 2.99.0 and `gh-stack` v0.1.0. Run or read back: every
+`gh stack` and `gh pr` command quoted here with its error text, the GraphQL and
+REST **read** shapes, `merge-async` and its poll, and the link/close behaviour of
+closing keywords. **From the docs, not run:** the REST **write** endpoints
+(`POST /stacks`, `/add`, `/unstack` — the `gh stack` equivalents were run
+instead), the stack map, protections and checks evaluated against the trunk,
+GitHub Desktop, the queued/auto-merge note on unstack, `link` correcting a wrong
+base, a merge queue on the trunk, and exit 9. The feature is in public preview and
+subject to change; re-read `--help` before trusting a flag here.*
+
+A stack is an ordered chain of PRs in **one repository**, each targeting the head
+branch of the one below it, the bottom one targeting the trunk. GitHub links them
+into a stack object with its own repo-scoped number, shows a stack map on every
+layer, evaluates each layer's protections and required checks against the
+**trunk**, and merges a contiguous run from the bottom up as one atomic operation.
+Stacks are strictly linear, never cross forks or repositories, and are not
+supported in GitHub Desktop.
+
+**Stack membership is separate from the PR's base branch**, exactly as board
+membership is separate from the issue. A PR created with
+`gh pr create --base <layer-branch>` has the right base and is in no stack: it
+looks completely normal, reviewers see no stack map, protections are evaluated
+against the layer branch instead of the trunk, and merging it lands it on the
+*layer branch*. Nothing about the create says any of this.
+
+### Where `gh stack` sits on the ladder
+
+`gh stack` is a `gh` **extension**, so it is rung 1 only once installed. Check
+`gh extension list` first; install with `gh extension install github/gh-stack`
+(local, writes nothing to GitHub) or drop to rung 2.
+
+Rung 2 for stacks is `gh api` **REST**, not GraphQL. The schema exposes
+`PullRequest.stack` and `PullRequest.stackEntry` read-only and defines no stack
+mutation — introspect `Mutation` and there is nothing to find. Every REST call
+below takes `-H "X-GitHub-Api-Version: 2026-03-10"`; keep the header in the
+command even when a call happens to answer without it.
+
+| Task | Rung 1 | Rung 2 |
+|---|---|---|
+| list a repo's stacks | — (`gh stack checkout` with no argument is a picker, not a list) | `gh api -H "X-GitHub-Api-Version: 2026-03-10" /repos/{o}/{r}/stacks` — `?pull_request=N` filters |
+| read one stack | `gh stack view --json` — **local tracking only**; `checkout <number>` first | `GET /repos/{o}/{r}/stacks/{stack_number}` |
+| is this PR a layer? | **no flag** — `gh pr view --json` has no stack field | GraphQL `pullRequest.stack` / `stackEntry` (below), or REST `GET /repos/{o}/{r}/pulls/{n}` → `.stack` |
+| create a stack | `gh stack link <bottom> … <top>` / `gh stack submit --auto` | `POST /repos/{o}/{r}/stacks` `{"pull_requests":[…]}`, bottom to top *(docs, not run)* |
+| extend a stack | `gh stack link <stack-number> <pr-or-branch> …` | `POST /repos/{o}/{r}/stacks/{n}/add` *(docs, not run)* |
+| dissolve | `gh stack unstack <stack-number>` | `POST /repos/{o}/{r}/stacks/{n}/unstack` — docs say queued / auto-merge PRs stay stacked *(not run)* |
+| merge | `gh stack merge <pr-or-stack-number> --yes --<method>` | `PUT /repos/{o}/{r}/pulls/{n}/merge-async -f merge_method=squash` → `{"status":"pending","details":{"uuid":…}}`; poll `GET …/merge-async/{uuid}` until `status` is `merged` / `failed` / `enqueued` (the bare path 404s on GET). Merges N and every unmerged layer below it |
+
+The read you will run most is the membership check, and it is rung 2 by
+capability:
+
+```graphql
+repository(owner: "<o>", name: "<r>") { pullRequest(number: <n>) {
+  baseRefName
+  stackEntry { position }
+  stack { number size baseRefName
+    entries(first: 50) { totalCount nodes { position
+      pullRequest { number state baseRefName headRefName } } } } } }
+```
+
+`stack` is `null` when the PR is not a layer — that is the answer, not an error.
+`position` 1 is the layer nearest the trunk; `stack.baseRefName` is the trunk.
+Compare `entries.totalCount` to the nodes you got back, as with board fields.
+
+**Merged layers stay in the stack and positions never renumber.** After position
+1 merges, the entry is still there with `state: MERGED`, `size` is unchanged, and
+the next layer is still position 2 — now with `baseRefName` equal to the trunk,
+because GitHub retargeted and rebased it server-side. "Lowest unmerged" is the
+first entry whose state is `OPEN`, never "position 1". That server-side rebase
+also moves the remote branch out from under your clone: after any stack merge,
+`gh stack sync` before pushing, or the push is rejected as non-fast-forward.
+
+### Run the membership check before any PR merge, close, or retarget
+
+A stack changes what three ordinary commands do, and `gh pr view` will not warn you:
+
+| Command | On a plain PR | On a stack layer |
+|---|---|---|
+| `gh pr merge N` | merges N | **fails on every layer, position 1 included**, exit 1: *"This pull request is part of a stack and must be merged using the asynchronous merge REST API."* `gh stack merge N --yes`, or `merge-async`, merges N **and every unmerged layer below it**, all or nothing |
+| `gh pr merge --auto` | arms auto-merge | the same error — **unsupported** on stacks |
+| `gh pr close N` | closes N | N stays in the stack as `CLOSED`, and the layer above still reports `mergeStateStatus: CLEAN` — the block shows only when you try: `gh stack merge` above it exits 5 with *"cannot be merged yet: #N below it is closed."* Reopening restores it |
+| `gh pr edit N --base` | retargets N | **refused**: *"Cannot change the base branch because the pull request is part of a stack."* The chain cannot be broken this way; restructure with `unstack` and `link` |
+
+So the confirm-before-merging rule has a bigger question to ask: **name every PR
+that will land.** "Merge #42" on a layer at position 3 is a request to merge
+PRs #40, #41, and #42 together, and the caller may not know that. Never run
+`gh stack merge` with no argument non-interactively — it merges the entire current
+stack without a prompt.
+Pass the PR or stack number, and pass a method flag; without one it silently reuses
+whatever method was used last. A merge queue on the trunk overrides the flag and
+may land the run in separate groups.
+
+A layer can merge only when every layer below it also meets the trunk's rules and
+each layer **contains the tip of the layer below it.** Push a new commit to a
+lower layer without rebasing the ones above and the merge is refused atomically,
+exit 4: *"Stack needs to be rebased: PR #9's branch is not a linear descendant of
+PR #10's branch. Stack merges are atomic, so nothing was merged."* `gh stack sync`
+repairs it. A merge commit from `gh pr update-branch` satisfies the check — a
+squash merge went through with one in the chain — so "linear" here means
+*descends from*, not *no merge commits*. A draft anywhere in the run is refused
+before anything is tried, exit 2: *"nothing to merge: pull request #10 is a
+draft."*
+
+### Creating a stack: create the PRs, then link them
+
+Two paths, and the second is the routing answer for this skill:
+
+| Path | What it does to titles and bodies |
+|---|---|
+| `gh stack submit --auto` | pushes every branch, opens a **draft** PR per branch (`--open` for ready), links the stack. Title and body are generated: one commit → its subject and body; several → the humanised branch name and an empty body. Every body gets a `gh-stack` footer. **No flag for a title or body** — `gh pr edit` each one afterwards. A branch with no commits gets a warning and no PR, and the command still exits 0 |
+| `gh pr create --base <lower-head> …` per layer, then `gh stack link <bottom> … <top>` | each PR is created with the template checked, the reference or keyword in the body, and the base you chose — this skill's ordinary PR create — then one additive call: `link` adopts existing open PRs, corrects a wrong base, and never removes a member |
+
+Prefer the second. It keeps every rule in *Linking a PR to Its Issue* intact and
+makes stacking one call at the end. Either way, arguments to `link` and `init` go
+**bottom to top** — and `gh stack init a b c` leaves you checked out on **`c`**,
+the top, so the first commit after it lands on the top layer unless you
+`gh stack bottom` first. Without `gh-stack` the equivalent is
+`POST /repos/{o}/{r}/stacks` with the PR numbers in that order. `gh stack unstack
+<n>` removes the grouping on GitHub and locally and leaves every PR open; linking
+again gets a **new** stack number.
+
+**Non-interactive rules for `gh stack`.** It branches on whether stdout is a TTY,
+and under a PTY several commands open a full-screen UI and block:
+
+```
+always: view --json · submit --auto · merge <target> --yes · init <branch>… ·
+        add <branch> · checkout <target>
+never:  modify · switch · bare view / submit / merge / init / add / checkout
+--remote <name> on push / submit / sync / rebase / link unless remote.pushDefault is set
+```
+
+`gh stack view --json` writes JSON to stdout and status to stderr; branch on the
+exit code, never on stderr text. Two exit codes are answers, not failures: `2`
+(not in a stack — also what `view` returns after `link`, which keeps no local
+tracking; `checkout <stack-number>` imports it) and `9` (stacked PRs unavailable
+on this repository) — the same "empty is the truth" shape as Issue Fields on a
+personal account, and an empty `/stacks` list is the same answer from rung 2. Exit
+`3` is a rebase conflict, `4` is GitHub refusing the request (the atomic merge
+errors above come back as 4), `5` is a precondition `gh stack` checked itself, and
+`6` means the branch sits in several stacks; none is a capability limit.
+
+### The gate
+
+> **A PR created on another open PR's head branch is linked into that stack in the
+> same call, or the caller is told it is a chain-shaped PR in no stack.** An
+> existing PR found in that shape is *reported* with a proposed link, never linked
+> silently — stacking changes what merging the **upper** PR does, for whoever owns it.
+
+Two gates, deliberately different, on the same membership-versus-content logic as
+Projects v2:
+
+| | PR you create on a layer branch | Existing chain-shaped PR you discover |
+|---|---|---|
+| Discovered and unlinked | **link it** — the caller approved a PR on that base, and unlinked is the broken state | **propose it** — reversible, but the upper PR's owner never asked for its merge to land the layer below with it, or for its checks to run against the trunk |
+
+Why the asymmetry sits where it does: stacking leaves position 1 alone — it still
+targets the trunk, merges alone when it is the merge target, and is checked against
+the trunk either way. What changes is the layer **above** it: merged, it now lands the
+layer below atomically, and it cannot merge until that layer also passes. In the
+create case the caller owns that upper PR, so the caller has already decided; in
+the discover case someone else does. This also covers the case where the lower PR
+is in no stack yet — `link <lower> <upper>` creates one containing both, and the
+lower PR's merge scope and checks are unchanged by it.
+
+Every layer is still its own PR for everything else in this file: it goes on a
+Projects v2 board separately, it carries its own reference or keyword, and the
+Default-Branch Trap applies to it individually.
+
+**Stacks are same-repo.** A PR in one repo that depends on a PR in another is not a
+stack and cannot be made one — express it as an issue dependency (*Cross-Repo
+Work*) and say so.
+
 ## Cross-Repo Work
 
 Issues, PRs, and Projects v2 boards span repositories under one owner. Cross-repo
-linking is a normal case in any multi-repo org.
+linking is a normal case in any multi-repo org. **Stacks are the exception** — a
+stack never leaves its repository (*Stacked Pull Requests*).
 
 **Every relationship flag accepts an issue URL, and the URL form crosses repos:**
 
@@ -992,15 +1217,19 @@ would have ranked. Paginating to find one more match buys noise by construction.
 | read one | `gh pr view N` | `--json` for structured fields, including `files` |
 | diff | `gh pr diff N` | |
 | checks | `gh pr checks N` | |
-| create | `gh pr create --base --head --title --body` | check `.github/pull_request_template.md` first; closing keyword goes in the **body** |
+| create | `gh pr create --base --head --title --body` | check `.github/pull_request_template.md` first; closing keyword goes in the **body**. A base that is another open PR's head makes it a stack layer — link it in the same call (*Stacked Pull Requests*) |
+| is it a stack layer? | rung 2 — GraphQL `pullRequest { stack stackEntry }` | **`gh pr view --json` has no stack field.** Run this before merge, close, or retarget |
+| verify the issue link | `gh pr view N --json closingIssuesReferences` | empty under a body that carries `Closes` = the Default-Branch Trap, caught |
 | request review | `gh pr edit N --add-reviewer u` | |
-| retitle / retarget | `gh pr edit N --title` / `--base` | |
+| retitle / retarget | `gh pr edit N --title` / `--base` | `--base` is **refused** on a stack layer — restructure with `gh stack unstack` + `link` instead |
 | mark ready | `gh pr ready N` | |
 | approve / request changes | `gh pr review N --approve` / `--request-changes` | top-level body only |
 | line-level review comment | `gh api graphql` | **no `gh` flag exists** — rung 2, `addPullRequestReviewThread` |
 | comment | `gh pr comment N -b` | PR comments go through the issue endpoint |
-| merge | `gh pr merge N --squash` | **confirm with the user first** |
-| update branch | `gh pr update-branch N` | |
+| merge | `gh pr merge N --squash` | **confirm with the user first.** On a stack layer this **fails** — `gh stack merge N --yes --squash` or `merge-async`, which merge every unmerged layer below N too: **name them all** in the confirmation. `--auto` is unsupported on stacks |
+| close | `gh pr close N` | on a stack layer this blocks every layer above it — say so first |
+| update branch | `gh pr update-branch N` | on a stack layer prefer `gh stack sync` — it also fixes the *"not a linear descendant"* refusal, which `update-branch` cannot reach from the top |
+| stack: read / link / extend / dissolve | `gh stack view --json` / `link` / `link <n>` / `unstack <n>` | extension, rung 1 once installed; rung 2 is REST `/repos/{o}/{r}/stacks` — **GraphQL has no stack mutation** |
 
 ## Repo / Files / Search / Users
 
@@ -1053,7 +1282,9 @@ returns is a receipt.
 YOU ARE READ-ONLY.
 Never call setIssueFieldValue, addProjectV2ItemById,
 updateProjectV2ItemFieldValue, any GraphQL mutation, or
-gh issue edit/create/close/comment or gh project item-add/item-edit. If a task
+gh issue edit/create/close/comment or gh project item-add/item-edit, or
+gh stack init/add/submit/link/merge/sync/push/rebase/unstack/checkout —
+sync and push force-push branches, checkout rewrites the working tree. If a task
 seems to need one, return it in asks[] — never as an action.
 
 Walk the ladder: gh flag → gh api graphql. Never report something
@@ -1064,6 +1295,8 @@ HTTP 200 can carry an "errors" key. Check every response, whatever the exit code
   Nulls under errors are FAILURES, not absences — they go to not_covered[].
 On a personally-owned account Issue Fields and issue types are ABSENT, not
   restricted. Empty is the complete answer. Do not escalate.
+Stack membership is GraphQL pullRequest.stack (null = not a layer) or REST
+  /repos/{o}/{r}/stacks — gh pr view --json has no stack field.
 
 Return exactly one fenced json block as your last message. Rows, never prose.
 ```
@@ -1088,7 +1321,7 @@ return is a coin flip. Non-empty `asks[]` **blocks every dependent write**.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, and no `call` matches `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh stack (init\|add\|submit\|link\|merge\|sync\|push\|rebase\|unstack\|checkout)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload.** Tell the user a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — the latter is a permissions or transient failure, not a hallucination. |
 | **Discovery** — every proposed field name is in this run's org `issueFields` **or** this run's `projectV2.fields`, and the proposal names which | Drop the proposal; report that field unset, naming it. A proposal that doesn't say which of the two it means is not verified — the write paths differ. |
 | **Ladder honesty** — any unreachability claim is backed by `surface_log` entries at **both** rungs | Treat as unproven. **The caller re-walks the ladder itself** before reporting anything unset. |
@@ -1166,7 +1399,8 @@ asked. A `rung1_failed` that rung 2 then covered is worth one line, not a paragr
 - Skipping a link because an auto-add workflow "probably" caught it — its scope is
   not visible from here, and adding is idempotent anyway
 - Putting a closing keyword in a PR body without checking that the base is the
-  repo's **default branch** — off it, the keyword is inert and no link is created
+  repo's **default branch** — off it, no link is created, and off a stack no
+  close either
 - Assuming the default branch is `main` instead of reading `defaultBranchRef`
 - Reporting a PR as "linked to #N" when the base branch made the keyword inert —
   the body renders fine and the sidebar is empty, so nobody checks
@@ -1175,6 +1409,31 @@ asked. A `rung1_failed` that rung 2 then covered is worth one line, not a paragr
   go missing off a board exactly the way issues do
 - Trying to write `Linked pull requests` on a board item — it is a projection of
   the closing keyword, not a writable field
+- Merging, closing, or retargeting a PR without having read whether it is a stack
+  layer — `gh pr view --json` has no stack field, so nothing warns you
+- Running `gh pr merge` or `gh pr merge --auto` on a stack layer, then reporting
+  it "can't be merged" instead of routing to `gh stack merge` / `merge-async`
+- Confirming "merge #42" without naming the layers below it that land with it
+- Running `gh stack merge` with no argument non-interactively — the whole stack
+  merges, no prompt
+- Creating a PR on another PR's head branch and stopping there — it is a
+  chain-shaped PR in no stack, and it looks identical to a layer
+- Silently linking an existing chain-shaped PR into a stack — that rewrites what
+  merging the upper PR does, for someone not in this conversation
+- Reporting the *feature's* issue as linked because `Closes` sits on the bottom
+  layer — it closes when layer 1 merges, however many layers remain
+- Reporting a retargeted layer as linked because its base is now the trunk —
+  retarget creates no link; only a body edit does. Read `closingIssuesReferences`
+- Reporting an upper layer's keyword as inert because it has no link — the
+  keyword fires when that layer lands in a stack merge. Inert link, live keyword
+- Treating "position 1" as "lowest unmerged" — merged layers keep their position;
+  read `state`
+- Pushing to a layer after a stack merge without `gh stack sync` — the remote was
+  rebased server-side and the push is rejected
+- Reaching for `gh api graphql` to create, extend, or dissolve a stack — the schema
+  has no stack mutation; rung 2 here is REST
+- Reading `gh stack` exit 9, or an empty `/stacks` list, as a discovery failure to
+  escalate
 - Approximating a field with a label, a comment, or `gh project item-edit`
 - Reading `issue_dependencies_summary` to decide whether something is blocked
 - Creating an issue without having run the dependency scan — the one preflight
@@ -1261,13 +1520,24 @@ ladder. The rest mean: you are about to write something false into the record.**
 | "One more page might turn up the blocker" | If the tie were strong enough to write, it would have ranked. Page two buys noise by construction. |
 | "I'll pull each candidate's blockers with a REST call per hit" | The GraphQL `search` selection returns `blockedBy` inline. That's twenty requests for one query's data. |
 | "It probably blocks #61 — cheap to add, they can remove it" | It lands on #61's blocked-by list and #61's board, in front of someone who was not in this conversation. Removing it is their afternoon, not yours. |
-| "The body says `Closes #43`, so the PR is linked" | Only if the base is the default branch. Off it, GitHub ignores the keyword and creates nothing — and the body still renders exactly the same. Read `defaultBranchRef`. |
+| "The body says `Closes #43`, so the PR is linked" | Only if the base is the default branch. Off it, GitHub creates no link — and the body still renders exactly the same. Read `defaultBranchRef`. (On a stack layer the *close* still fires at merge; the link is what is missing.) |
 | "The base is `main`, that's the default branch" | Usually. Not always, and the failure is silent when it isn't. One `--json defaultBranchRef` settles it. |
 | "Cross-repo closing keywords aren't supported" | They are — `Closes owner/repo#N`, given push access to that repo and a default-branch base. |
 | "Same repo, so a bare `#43` is fine in the keyword" | It works until the PR moves or someone reads it from elsewhere. The full form costs nothing and never resolves against the wrong repo. |
 | "I opened the PR, so the board picks it up" | Board membership is a separate call for PRs exactly as it is for issues, and the same auto-add scoping you can't see applies. |
 | "I'll set `Linked pull requests` on the board item" | It is a projection of the closing keyword. Write the keyword; the field follows. |
 | "I fell back to GraphQL, so the merge is approved" | A fallback is routing, never consent. |
+| "It's a `gh pr`, so `gh pr merge` merges it" | Not a stack layer, it doesn't. `gh pr view --json` has no stack field — read `pullRequest.stack` first. A layer merges through `gh stack merge` or `merge-async`, and takes every layer below it along. |
+| "GraphQL can do anything REST can, so I'll create the stack with a mutation" | Introspect `Mutation`: there is no stack mutation. Stacks are the verified exception — rung 2 is `gh api` REST under the 2026-03-10 header. |
+| "The PR's base is the layer below, so it's in the stack" | A base is a branch; membership is a separate object. Read `stack` — `null` means not a layer, whatever the base looks like. |
+| "I'll `gh stack merge` and let it pick the scope" | With no argument and no TTY it merges the whole stack without asking. Pass a PR or stack number and name every PR that lands. |
+| "`Closes #N` on the bottom layer links the feature to its issue" | It links layer 1. The issue closes when layer 1 merges, however much of the feature is still open. |
+| "Once the lower layers merge the top PR targets `main`, so its keyword is linked" | Retarget creates no link — observed. Edit the body (to different text) and re-read `closingIssuesReferences`. |
+| "Layer 3's keyword never linked, so merging it closes nothing" | It closed its issue on merge, with the PR as closer — observed. The link and the close are separate mechanisms; report both. |
+| "I'll retarget the top layer to `main` with `--base` and merge it alone" | Refused: *"Cannot change the base branch because the pull request is part of a stack."* Unstack and relink if the shape is wrong. |
+| "`gh stack submit` opened the PRs, so the bodies are done" | It auto-generates titles and bodies and has no flag for either. `gh pr edit` each one — or create the PRs yourself and `link` them. |
+| "That PR chain isn't stacked — linking is idempotent, I'll just do it" | Additive and reversible, and it also changes what merging the upper PR does — it lands the layer below with it. Propose it to whoever owns that PR. |
+| "Exit 9 — time to walk the ladder" | Stacked PRs are unavailable on this repository. That is the complete answer, exactly like Issue Fields on a personal account. |
 | "The agent is read-only, so its payload is safe to use" | `Explore` holds `Bash`, so every `gh` write is reachable. Read-only is a rule it was given, not a wall it hit. Run the gates. |
 | "Its JSON was malformed but the numbers are right there" | Scraping prose is how a hallucinated figure enters a record wearing a real one's clothes. Retry once, then fall back. |
 | "The agent says that field can't be reached" | Not unless both rungs are in its log. Re-walk it before reporting anything unset. |
@@ -1303,10 +1573,22 @@ ladder. The rest mean: you are about to write something false into the record.**
 | Caller has no such policy | Propose `Status` as a marked guess against the board's real options. Never present a mapping read off column names as though it were the policy. |
 | Linking a PR to its issue | Closing keyword in the **body** — no flag or parameter exists on either rung |
 | Before trusting a closing keyword | `gh repo view --json defaultBranchRef` — off the default branch it is inert |
-| PR base is not the default branch | Keyword does nothing. Keep the plain reference, comment on the issue, report it unlinked |
+| PR base is not the default branch | No link is created. Keep the plain reference, comment on the issue, report it unlinked — and on a stack layer say the close still fires when that layer merges |
 | PR and issue in different repos | `Closes owner/repo#N` — works, needs push access and the default branch |
 | Which reference form in a keyword | Always full `owner/repo#N`, even same-repo |
 | Just opened a PR | It is on no board. Adding it is a separate call, same as for an issue |
+| Verifying a PR's issue link | `gh pr view N --json closingIssuesReferences` — empty under a `Closes` body is the trap, caught |
+| About to merge / close / retarget a PR | Read `pullRequest.stack` first — `gh pr view --json` has no stack field |
+| PR is a stack layer, merging | `gh stack merge N --yes --<method>` or `merge-async`; **name every layer below N** — they land with it. Never `gh pr merge`, never `--auto` |
+| PR is a stack layer, closing | A mid-stack close blocks everything above it. Say so before closing |
+| Creating a PR on another PR's head branch | Create it with the full body, then `gh stack link <bottom> … <top>` — same call |
+| Existing PR chain, not stacked | Propose the link; never link silently |
+| Stack surfaces | Read: GraphQL `stack` / `stackEntry`, or REST `/repos/{o}/{r}/stacks`. Write: `gh stack` or REST only — **GraphQL has no stack mutation** |
+| `gh stack` without a TTY | `view --json`, `submit --auto`, `merge <target> --yes`, named branches; never `modify` or `switch` |
+| Closing keyword in a stack | The *link* exists only on a trunk-based layer, and after a retarget only once the body is edited. The *close* fires when the carrying layer merges, link or no link. Say both |
+| Merging a stack via REST | `PUT …/pulls/{n}/merge-async -f merge_method=…`, then poll `GET …/merge-async/{uuid}` |
+| Just merged part of a stack | Merged entries keep their position; the next layer is retargeted server-side. `gh stack sync` before any push |
+| `gh stack` exit 9, or `/stacks` returns `[]` | Complete answers — no stacks, or stacks unavailable here. Not a ladder failure |
 | blocked-by / blocking | `gh issue edit`/`create` — URL form for cross-repo. Proposed at create time from parent + siblings + a bounded scan, not only on request |
 | Creating an issue, nobody named | `--assignee "@me"` is the default; only a named person displaces it |
 | Sub-issue across repos | `--add-sub-issue <full-URL>` |

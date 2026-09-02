@@ -71,6 +71,36 @@ Three corrections to common assumptions:
   project **creation** (`POST orgs/{org}/projectsV2` → 404), `views`, and
   `status_updates` (both 404).
 
+### Stacked pull requests — verified 2026-09-02
+
+The inverse of everything above: **REST-write-only.** GitHub's native stacked PRs
+(public preview since 2026-07-30) expose `PullRequest.stack` and
+`PullRequest.stackEntry` in GraphQL, both read-only, and the schema has **no stack
+mutation** — introspecting `Mutation` finds nothing. The write surface is REST under
+`X-GitHub-Api-Version: 2026-03-10`:
+
+- `GET/POST /repos/{o}/{r}/stacks`, `GET /stacks/{n}`, `POST /stacks/{n}/add`,
+  `POST /stacks/{n}/unstack`.
+- `PUT /repos/{o}/{r}/pulls/{n}/merge-async` (body `merge_method`), which returns
+  `{"status":"pending","details":{"uuid":…}}`; poll `GET …/merge-async/{uuid}`
+  until `status` is `merged`. The bare path 404s on GET.
+- The legacy merge — `gh pr merge`, `mergePullRequest`, `PUT …/merge` — is refused
+  on **every** layer, position 1 included: *"This pull request is part of a stack
+  and must be merged using the asynchronous merge REST API."*
+- `gh pr edit --base` on a layer is refused too: *"Cannot change the base branch
+  because the pull request is part of a stack."*
+
+The `gh` side is the `github/gh-stack` extension (v0.1.0). It is the rung-1 path
+once installed; `gh pr view --json` has **no `stack` field** in `gh` 2.99.0, so
+membership is a GraphQL or REST read.
+
+Observed once each on `msa1624/stack-lab`: a layer created with
+`gh pr create --base <layer-branch>` has `stack: null` until linked; merged layers
+stay in the stack with their position unchanged; the next layer is retargeted and
+rebased server-side; a closing keyword on a retargeted layer is not linked until
+its body is *changed*; and a keyword on an upper layer with no link still closed
+its issue when the layer landed in a stack merge, with the PR recorded as closer.
+
 ### Iteration fields — verified 2026-07-27
 
 An earlier version of this doc said iterations weren't present to test. They are:
@@ -246,6 +276,8 @@ Narrower, and all escapable via `gh api`:
 - `gh ruleset` is read-only; creating one needs
   `gh api -X POST /repos/{owner}/{repo}/rulesets --input file.json`.
 - Line-level review comments — `gh pr review` posts a top-level body only.
+- Stack membership of a PR — no field in `gh pr view --json`; and `gh pr merge`
+  cannot merge a stack layer at all (see *Stacked pull requests* above).
 - Milestones CRUD, org/team management (`gh org` has only `list`), webhooks,
   branch protection.
 - Projects v2 field values work but require raw node IDs
@@ -420,3 +452,6 @@ The one measurement worth remembering: the cross-repo rollup was **GraphQL cost
 - [Using the GraphQL API for Discussions](https://docs.github.com/en/graphql/guides/using-the-graphql-api-for-discussions)
 - [REST API endpoints for sub-issues](https://docs.github.com/en/rest/issues/sub-issues)
 - [REST API endpoints for issue types](https://docs.github.com/en/rest/orgs/issue-types)
+- [Stacked pull requests APIs and webhooks](https://docs.github.com/en/pull-requests/reference/stacked-pull-requests-apis-and-webhooks)
+- [REST API endpoints for pull request stacks](https://docs.github.com/en/rest/pulls/stacks?apiVersion=2026-03-10)
+- [Stacked pull requests CLI commands](https://docs.github.com/en/pull-requests/reference/stacked-prs-cli-commands)

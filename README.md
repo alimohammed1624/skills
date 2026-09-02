@@ -1,6 +1,6 @@
 # Test Project
 
-This repo exists to test Claude Code skills — it's a harness, not a product. The `.claude/skills/`
+This repo exists to test Claude Code skills — it's a harness, not a product. The `skills/`
 directory holds the org work-tracking skills described by
 [`docs/target-workflow.md`](docs/target-workflow.md), exercised against this repo and its org to
 check that they trigger correctly and behave as specified.
@@ -180,7 +180,8 @@ even when it makes the report read worse.
 Required sub-skill for all of the above, and the only one written to be portable — it encodes no
 policy from this org or this workflow. Whenever a `gh` CLI command would otherwise run — typed by
 Claude, pasted by the user, or implied by a script — it routes the action down a two-rung ladder:
-a `gh` flag if one exists, else `gh api graphql`.
+a `gh` flag if one exists, else `gh api` — GraphQL for nearly everything, REST for the one verified
+exception, stacked pull requests, which GraphQL can read but not write.
 Nothing may be called impossible until both have been walked and named. What keeps field
 enforcement intact is not the routing but runtime discovery: the field set is read with
 `gh api /orgs/<org>/issue-fields` at call time, never recalled from a list. Plain `git` is explicitly not `gh` and
@@ -196,7 +197,9 @@ questioned rather than filled with a guess when a field is missing; that the val
 discovered rather than assumed, and an option outside it is rejected; that a field which resists one
 attempt is reported unset rather than approximated with a neighbouring field; that on a personal
 account it reports the feature absent instead of walking the ladder; that translating or falling
-back on a merge/delete doesn't skip confirm-before-acting.
+back on a merge/delete doesn't skip confirm-before-acting; that before merging, closing, or
+retargeting a PR it reads whether the PR is a stack layer (`gh pr view --json` cannot tell it), and
+that a merge confirmation on a layer names every layer below it that lands with it.
 
 ## Delegated research
 

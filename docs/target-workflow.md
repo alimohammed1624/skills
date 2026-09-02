@@ -903,7 +903,7 @@ which is the trade this whole design refuses.
 | A field or relationship looks unsettable | Walk both rungs before saying it cannot be set, then name what was tried. Running out of time makes a field *unset*, never *unsettable*. |
 | Owner is a personal account | Issue Fields and issue types do not exist there. The analyses that depend on them degrade per §5 and say so; nothing is approximated to fill the gap. |
 
-Access to GitHub itself is `gh-wrapper`'s job — `.claude/skills/gh-wrapper/SKILL.md` owns the ladder
+Access to GitHub itself is `gh-wrapper`'s job — `skills/gh-wrapper/SKILL.md` owns the ladder
 and the per-surface traps, and `docs/github-surfaces.md` owns the mechanics of what each surface can
 and cannot reach. This section states what must hold, not how to reach it; neither is restated here.
 

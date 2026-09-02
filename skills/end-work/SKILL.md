@@ -1,6 +1,7 @@
 ---
 name: end-work
 description: Use when ending a work session, wrapping up, stopping for the day, or handing off in-flight work — before reporting that a session is finished or that work is ready for someone else to pick up
+disable-model-invocation: true
 ---
 
 # End Work
@@ -396,7 +397,7 @@ Create the month directory if this is the month's first event.
 | `to` | `handoff` only: the handle the work passes to |
 | `pr` | `pr_opened` only: the PR as `owner/repo#N`. Never a bare `#N`, and never a URL |
 | `draft` | `pr_opened` only: `true` when work remained, `false` when the thread was complete |
-| `linked` | `pr_opened` only: `true` when the closing keyword actually created the relationship, `false` when the base branch made it inert. **Recorded because it cannot be re-derived** — a later reader cannot tell a PR that never linked from one whose issue was closed by hand |
+| `linked` | `pr_opened` only: `true` when the closing keyword actually created the relationship, `false` when the base branch made it inert. **Recorded because it cannot be re-derived** — a later reader cannot tell a PR that never linked from one whose issue was closed by hand. For a **stack layer** the keyword still fires when that layer lands in a stack merge, link or no link — record `linked: false` and say so in the line (gh-wrapper → *Stacked Pull Requests*) |
 | `threads_touched` / `repos_touched` | `session_end` only: counts, so a session's shape reads without replaying it |
 | `inferred` | `true` only on a synthetic `session_end` for an abandoned session |
 
@@ -667,8 +668,10 @@ You are a READ-ONLY research agent. Return findings; never act on them.
 
 NEVER call setIssueFieldValue, addProjectV2ItemById,
 updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
-edit/create/close/comment, gh project item-add/item-edit, or
-gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
+edit/create/close/comment, gh project item-add/item-edit,
+gh pr create/edit/merge/review, or
+gh stack init/add/submit/link/merge/sync/push/rebase/unstack/checkout (sync and
+push force-push branches; checkout rewrites the working tree). If something seems to need one, return it in asks[] —
 never as an action. You CAN call these tools; not calling them is the rule you are
 being held to.
 The calling skill opens PRs itself, in the main conversation, after the developer
@@ -757,7 +760,7 @@ compliance pass did not run" is a printed line rather than an omitted section.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh stack (init\|add\|submit\|link\|merge\|sync\|push\|rebase\|unstack\|checkout)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. |
 | **SHA** — every SHA bound for a `commits` array survives `git -C <worktree> cat-file -e <sha>^{commit}` | Append the event **without** `commits`. It renders `(unverified)`, which is the honest outcome. **Never `git fetch` to make a fabricated SHA real.** |
 | **Discovery** — every proposed field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. `data: null` with an `errors` block at HTTP 200 is a permissions or transient failure, **not** a hallucination. |

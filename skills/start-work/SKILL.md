@@ -1,6 +1,7 @@
 ---
 name: start-work
 description: Use when beginning a work session, picking work back up, resuming in-flight work, starting a new task or track, or asking what to work on — before creating any issue, branch, or timeline entry for the session
+disable-model-invocation: true
 ---
 
 # Start Work
@@ -799,8 +800,10 @@ You are a READ-ONLY research agent. Return findings; never act on them.
 
 NEVER call setIssueFieldValue, addProjectV2ItemById,
 updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
-edit/create/close/comment, gh project item-add/item-edit, or
-gh pr create/edit/merge/review. If something seems to need one, return it in asks[] —
+edit/create/close/comment, gh project item-add/item-edit,
+gh pr create/edit/merge/review, or
+gh stack init/add/submit/link/merge/sync/push/rebase/unstack/checkout (sync and
+push force-push branches; checkout rewrites the working tree). If something seems to need one, return it in asks[] —
 never as an action. You CAN call these tools; not calling them is the rule you are
 being held to.
 DO NOT read the timeline, status.json, or tracks.yml. Everything you must compare
@@ -880,7 +883,7 @@ never reported as having nothing to report.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh stack (init\|add\|submit\|link\|merge\|sync\|push\|rebase\|unstack\|checkout)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and tell the developer a read-only agent attempted a write. Do not retry silently. |
 | **Existence** — every `owner/repo#N` resolves | Drop the ref and say so. Distinguish "does not exist" from `data: null` **with an `errors` block at HTTP 200** — that is a permissions or transient failure, not a hallucination. |
 | **Discovery** — every field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
 | **Reference form** — matches `^[\w.-]+/[\w.-]+#\d+$` | Reject the record rather than guessing the owner. |

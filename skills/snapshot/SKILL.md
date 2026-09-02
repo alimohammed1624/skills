@@ -1,6 +1,7 @@
 ---
 name: snapshot
 description: Use when the user explicitly runs /snapshot or asks for a snapshot by name. Do NOT trigger on conversational phrasing like "where do things stand", "what's the status", or "how is the team doing" — answer those directly instead.
+disable-model-invocation: true
 ---
 
 # /snapshot
@@ -321,7 +322,7 @@ Report the disagreement in Notes and let the workday skills fix it on their next
 | `title` | on `branch_created`: the thread's title **as of when work began**. Never refreshed, never authoritative |
 | `commits` | short SHAs — an entry with none is unverified, and renders that way |
 | `blocked_by` | `owner/repo#N` — a dependency **actually hit** while working |
-| `pr` · `draft` · `linked` | on `pr_opened`: the PR as `owner/repo#N`, whether it opened as a draft, and whether the closing keyword actually created the linked-issue relationship. **`linked: false` is a finding** — that PR's issue will not close on merge, and nothing on either item shows it |
+| `pr` · `draft` · `linked` | on `pr_opened`: the PR as `owner/repo#N`, whether it opened as a draft, and whether the closing keyword actually created the linked-issue relationship. **`linked: false` is a finding** — that PR's issue will not close on merge, and nothing on either item shows it. **One exception:** a stack layer's keyword fires when that layer lands in a stack merge even with no link, so for a layer report `linked: false` *and* say the close still fires on merge (gh-wrapper → *Stacked Pull Requests*) |
 
 **`branch_created` fixes a thread's actual start; `done` fixes its actual finish.** Those two are the
 only source for the actual side of any join. Planned dates come from the issue, live. **Swapping them
@@ -417,8 +418,10 @@ You are a READ-ONLY research agent. Return findings; never act on them.
 
 NEVER call setIssueFieldValue, addProjectV2ItemById,
 updateProjectV2ItemFieldValue, any GraphQL mutation, or gh issue
-edit/create/close/comment, gh project item-add/item-edit, or
-gh pr create/edit/merge/review. You CAN call these tools; not calling them is the
+edit/create/close/comment, gh project item-add/item-edit,
+gh pr create/edit/merge/review, or
+gh stack init/add/submit/link/merge/sync/push/rebase/unstack/checkout (sync and
+push force-push branches; checkout rewrites the working tree). You CAN call these tools; not calling them is the
 rule you are being held to. YOU write NOTHING to GitHub — if something seems
 to need a write, return it in asks[]. end-work opens PRs; /snapshot never does, and
 neither do you.
@@ -544,7 +547,7 @@ activity — it goes in not_covered.
 | Gate | On failure |
 |---|---|
 | **Envelope** parses and carries every required field | Treat as no-return. **Never scrape values out of prose.** |
-| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. The skill publishing its own report file changes nothing here — no agent has any write surface at all, and one reaching for the record is the loudest possible finding. |
+| **Write-class** — every `surface_log[].class == "read"`, no `call` matching `setIssueFieldValue`, `addProjectV2ItemById`, `updateProjectV2ItemFieldValue`, `^mutation`, `gh issue (edit\|create\|close\|comment)`, `gh project item-(add\|edit)`, `gh pr (create\|edit\|merge\|review)`, `gh stack (init\|add\|submit\|link\|merge\|sync\|push\|rebase\|unstack\|checkout)`, `gh api --method (POST\|PATCH\|PUT\|DELETE)` | **Discard the whole payload** and say a read-only agent attempted a write. The skill publishing its own report file changes nothing here — no agent has any write surface at all, and one reaching for the record is the loudest possible finding. |
 | **No ranking** — `people` keys alphabetical; no `rank`/`score`/`total`/`percentile`/`top_*`/`velocity` key; nothing sorted by a count; `themes` free of evaluative words | **Drop the layer.** Say the contribution layer could not be rendered safely. |
 | **Comparison label** names the roles you actually passed in | Reject the join; print it as not-run. |
 | **Discovery** — every field name is in this run's org `issueFields` list | Drop it; report that field unset, naming it. |
