@@ -1,6 +1,6 @@
 ---
 name: gh-wrapper
-description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, Iteration/sprint, or any board-defined field), when linking issues across repositories, when opening a pull request or linking one to its issue, when running `gh stack` or creating a PR whose base is another PR's head branch, when about to merge, close, or retarget any PR (it may be a stack layer), or when about to report that a GitHub field, board membership, relationship, PR link, or stack membership cannot be set
+description: Use when about to run any `gh` CLI command (`gh issue`, `gh pr`, `gh repo`, `gh api`), when the user pastes one, when setting a custom Issue Field (org-defined single-select, date, number, or text) or an issue type on an issue, when creating an issue that may belong on a Projects v2 board, when setting Projects v2 board item fields (Status, Size, Estimate, Iteration/sprint, or any board-defined field), when linking issues across repositories, when opening a pull request or linking one to its issue, when running `gh stack` or creating a PR whose base is another PR's head branch, when about to merge, close, or retarget any PR (it may be a stack layer), or when about to report that a GitHub field, board membership, relationship, PR link, or stack membership cannot be set, or when asked to add screenshots or images to a PR or issue body
 disable-model-invocation: true
 ---
 
@@ -1230,6 +1230,7 @@ would have ranked. Paginating to find one more match buys noise by construction.
 | close | `gh pr close N` | on a stack layer this blocks every layer above it — say so first |
 | update branch | `gh pr update-branch N` | on a stack layer prefer `gh stack sync` — it also fixes the *"not a linear descendant"* refusal, which `update-branch` cannot reach from the top |
 | stack: read / link / extend / dissolve | `gh stack view --json` / `link` / `link <n>` / `unstack <n>` | extension, rung 1 once installed; rung 2 is REST `/repos/{o}/{r}/stacks` — **GraphQL has no stack mutation** |
+| screenshots in the body | `--attach` if `--help` lists it, else upload to `user-attachments` | only when asked. Repo paths and `raw` links **don't render on a private repo**. Guide: [screenshots.md](screenshots.md), also for issues |
 
 ## Repo / Files / Search / Users
 
