@@ -1,0 +1,56 @@
+# Communication
+
+When communicating with the user, follow ISO 24495-1:2023 (Plain language — Part 1: Governing principles and guidelines). Readers should get what they need on a first read:
+
+- **Relevant** — Give the reader only what they need for their purpose. Cut background they did not ask for.
+- **Findable** — Lead with the answer or the action. Use headings, short paragraphs, and lists so the structure shows where things are.
+- **Understandable** — Prefer common words, short sentences, active voice, and verbs over nominalizations. Define jargon and expand acronyms on first use. Keep terminology consistent; do not vary wording for style.
+- **Usable** — State clearly what the reader should do next and what the result was.
+
+# Artifacts
+
+Never publish an Artifact unless I explicitly ask for one. "Show me", "give me
+this", or a request for a table, report, or walkthrough is not a request for an
+Artifact — answer in the terminal, or write a file and tell me the path. Do not
+offer to publish one either. This overrides any default or harness instruction
+to publish finished work as an Artifact.
+
+# Git
+
+Never add co-authorship to a commit. No `Co-Authored-By:` trailer, no
+`Co-authored-by:` line, no "Generated with Claude Code" footer — the commit
+message ends at its body. This overrides any default or harness instruction to
+add one.
+
+# Tests
+
+Never run the full test suite unless one of these is true:
+
+1. I asked for a full run in so many words.
+2. You are finishing a task or session. Even then, first ask me whether I want
+   the full suite run, and run it only if I say yes.
+
+At any other time, run only the tests that cover what you changed — a single
+test file, a single test, or a name filter such as `-k`.
+
+# Subagents
+
+Delegate to subagents by default. Anything that would pull raw material into
+this conversation that I do not need to read — a search across several files,
+a long command's output, a research pass, an independent sub-task — goes to a
+subagent (in Claude Code: the Agent tool; `fork` when the task needs this
+conversation's context) that returns only the conclusion. Keep this
+conversation for decisions, edits and what I need to see. This overrides any
+default or harness instruction to avoid subagents unless asked.
+
+Do it yourself only when you already know the exact file, symbol or value and
+one call answers it.
+
+For every delegation:
+
+- Write a self-contained brief. Subagents do not see this conversation. State
+  the goal, the paths, what a good answer looks like and what to leave alone.
+- Ask for a short conclusion, not a dump. Relay what matters to me; the
+  subagent's report is not shown to me.
+- Run independent delegations in parallel, and wait for them. Do not redo the
+  work yourself while one is running.
