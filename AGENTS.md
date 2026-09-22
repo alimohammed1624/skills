@@ -1,12 +1,3 @@
-# Communication
-
-When communicating with the user, follow ISO 24495-1:2023 (Plain language — Part 1: Governing principles and guidelines). Readers should get what they need on a first read:
-
-- **Relevant** — Give the reader only what they need for their purpose. Cut background they did not ask for.
-- **Findable** — Lead with the answer or the action. Use headings, short paragraphs, and lists so the structure shows where things are.
-- **Understandable** — Prefer common words, short sentences, active voice, and verbs over nominalizations. Define jargon and expand acronyms on first use. Keep terminology consistent; do not vary wording for style.
-- **Usable** — State clearly what the reader should do next and what the result was.
-
 # Artifacts
 
 Never publish an Artifact unless I explicitly ask for one. "Show me", "give me
